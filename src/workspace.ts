@@ -8,12 +8,11 @@ import {
     defaultAsn1Config,
     mergeAsn1Config,
 } from "./config.ts";
+import { expandGlob } from "@std/fs/expand-glob";
+import { basename, relative } from "@std/path";
 import { log } from "./logging.ts";
 import {
-    basename,
     DiagnosticCollection,
-    joinPath,
-    relativePath,
     TextDocument,
     Uri,
 } from "./types_vscode.ts";
@@ -105,133 +104,25 @@ export function resetWorkspaceState(): void {
     asn1Config = mergeAsn1Config({ alwaysDefined: [] });
 }
 
-function braceExpand(segment: string): string[] {
-    const m = segment.match(/^\{([^}]+)\}$/);
-    if (!m) {
-        return [segment];
-    }
-    return m[1]!.split(",");
-}
-
-function globToRegExp(glob: string): RegExp {
-    const parts: string[] = [];
-    let i = 0;
-    while (i < glob.length) {
-        if (glob.startsWith("**/", i)) {
-            parts.push("(?:.*/)?");
-            i += 3;
-            continue;
-        }
-        if (glob.startsWith("**", i)) {
-            parts.push(".*");
-            i += 2;
-            continue;
-        }
-        if (glob[i] === "*" && glob[i + 1] !== "*") {
-            parts.push("[^/]*");
-            i++;
-            continue;
-        }
-        if (glob[i] === "?") {
-            parts.push("[^/]");
-            i++;
-            continue;
-        }
-        if (glob[i] === "{") {
-            const end = glob.indexOf("}", i);
-            if (end !== -1) {
-                const alts = glob.slice(i + 1, end).split(",").map((a) =>
-                    a.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-                );
-                parts.push(`(?:${alts.join("|")})`);
-                i = end + 1;
-                continue;
-            }
-        }
-        const ch = glob[i]!;
-        if ("\\^$+?.()|[]".includes(ch)) {
-            parts.push("\\" + ch);
-        } else {
-            parts.push(ch);
-        }
-        i++;
-    }
-    return new RegExp(`^${parts.join("")}$`);
-}
-
-function matchesGlob(relPath: string, glob: string): boolean {
-    const normalized = relPath.replaceAll("\\", "/");
-    if (glob.includes("{")) {
-        const start = glob.indexOf("{");
-        const end = glob.indexOf("}", start);
-        if (start !== -1 && end !== -1) {
-            for (const alt of braceExpand(glob.slice(start, end + 1))) {
-                const expanded = glob.slice(0, start) + alt + glob.slice(end + 1);
-                if (globToRegExp(expanded).test(normalized)) {
-                    return true;
-                }
-            }
-            return false;
-        }
-    }
-    return globToRegExp(glob).test(normalized);
-}
-
-function pathSegmentsExcluded(rel: string, excludeGlob: string): boolean {
-    const inner = excludeGlob.match(/\{([^}]+)\}/)?.[1];
-    if (inner) {
-        const names = new Set(inner.split(","));
-        return rel.split("/").some((seg) => names.has(seg));
-    }
-    return false;
-}
-
-async function* walkFiles(root: string): AsyncGenerator<{ path: string; name: string }> {
-    try {
-        for await (const entry of Deno.readDir(root)) {
-            const full = joinPath(root, entry.name);
-            if (entry.isDirectory) {
-                yield* walkFiles(full);
-            } else if (entry.isFile) {
-                yield { path: full, name: entry.name };
-            }
-        }
-    } catch {
-        // Unreadable directory.
-    }
-}
-
 async function findFiles(include: string, exclude?: string): Promise<Uri[]> {
     const results: Uri[] = [];
+    const seen = new Set<string>();
     for (const folder of workspaceFolders) {
         const root = folder.fsPath;
         try {
-            const st = await Deno.stat(root);
-            if (!st.isDirectory) {
-                continue;
-            }
-        } catch {
-            continue;
-        }
-        try {
-            for await (const entry of walkFiles(root)) {
-                const rel = relativePath(root, entry.path).replaceAll("\\", "/");
-                const includeHit = matchesGlob(rel, include) ||
-                    matchesGlob(entry.name, include) ||
-                    matchesGlob(
-                        rel,
-                        include.startsWith("**/") ? include : `**/${include}`,
-                    );
-                if (!includeHit) {
+            for await (
+                const entry of expandGlob(include, {
+                    root,
+                    exclude: exclude ? [exclude] : [],
+                    includeDirs: false,
+                    globstar: true,
+                    extended: true,
+                })
+            ) {
+                if (!entry.isFile || seen.has(entry.path)) {
                     continue;
                 }
-                if (
-                    exclude &&
-                    (matchesGlob(rel, exclude) ||
-                        pathSegmentsExcluded(rel, exclude))
-                ) {
-                    continue;
-                }
+                seen.add(entry.path);
                 results.push(Uri.file(entry.path));
             }
         } catch (e) {
@@ -308,7 +199,7 @@ export const workspace = {
         for (const folder of workspaceFolders) {
             const root = folder.fsPath;
             if (fsPath.startsWith(root)) {
-                return relativePath(root, fsPath);
+                return relative(root, fsPath);
             }
         }
         return basename(fsPath);
@@ -332,5 +223,3 @@ export const languages = {
         return new DiagnosticCollection(name);
     },
 };
-
-export { joinPath };

@@ -763,15 +763,6 @@ export class WorkspaceEdit {
     }
 }
 
-/**
- * A command that a client may execute.
- */
-export interface Command {
-    title: string;
-    command: string;
-    arguments?: unknown[];
-}
-
 export enum CodeActionKind {
     QuickFix = "quickfix",
 }
@@ -783,7 +774,7 @@ export class CodeAction {
     public diagnostics?: Diagnostic[];
     public isPreferred?: boolean;
     public edit?: WorkspaceEdit;
-    public command?: Command;
+    public data?: unknown;
     constructor(
         public title: string,
         public kind?: CodeActionKind | string,
@@ -915,5 +906,5 @@ export interface CodeActionProvider {
         range: Range | Selection,
         context: CodeActionContext,
         token: CancellationToken,
-    ): ProviderResult<(CodeAction | Command)[]>;
+    ): ProviderResult<CodeAction[]>;
 }

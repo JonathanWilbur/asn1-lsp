@@ -5,25 +5,69 @@ import {
     DIAG_CODE_ASSIGNMENT_DUP,
     DIAG_CODE_IMPORT_MODULE_UNUSED,
     DIAG_CODE_SYMBOL_NOT_DEFINED,
+    updateDiagnostics,
+    diagnosticCollection,
 } from "./diagnostics.ts";
 import { getParserOutputsWithLogging } from "./parsing.ts";
 import { getRangeFromLocation, positionFallsWithin } from "./utils.ts";
-import { type Module, type Production, type SymbolsFromModule } from "@wildboar/asn1-parser";
+import type { Module, Production, SymbolsFromModule } from "@wildboar/asn1-parser";
+
+const TREAT_AS_DEFINED = "treatAsDefined";
+
+export interface TreatAsDefinedData {
+    kind: typeof TREAT_AS_DEFINED;
+    identifier: string;
+    uri: string;
+}
+
+function isTreatAsDefinedData(data: unknown): data is TreatAsDefinedData {
+    if (!data || typeof data !== "object") {
+        return false;
+    }
+    const rec = data as Record<string, unknown>;
+    return rec.kind === TREAT_AS_DEFINED
+        && typeof rec.identifier === "string"
+        && typeof rec.uri === "string";
+}
 
 /**
- * @summary Create a command to refresh diagnostics
- * @param document The text document
- * @returns A command to refresh diagnostics
- * @function
+ * @summary Append an identifier to `alwaysDefined` and refresh diagnostics
+ * @param identifier The identifier to treat as defined
+ * @param uri The document whose diagnostics should be refreshed, if open
  */
-function createUpdateDiagnosticsCommand(
-    document: vscode.TextDocument,
-): vscode.Command {
-    return {
-        title: "Refresh ASN.1 diagnostics",
-        command: "asn1.diagnose",
-        arguments: [document.uri],
-    };
+export async function applyTreatAsDefined(
+    identifier: string,
+    uri?: vscode.Uri,
+): Promise<void> {
+    const current = vscode.workspace.getConfiguration("asn1")
+        .get<string[]>("alwaysDefined", []);
+    if (!current.includes(identifier)) {
+        await vscode.workspace.getConfiguration("asn1")
+            .update("alwaysDefined", [...current, identifier]);
+    }
+    if (!uri) {
+        return;
+    }
+    const doc = vscode.getOpenTextDocument(uri);
+    if (doc) {
+        await updateDiagnostics(doc, diagnosticCollection);
+    }
+}
+
+/**
+ * @summary Apply a code action that has no workspace edit of its own
+ * @param action The code action, possibly with `data` describing server-side work
+ */
+export async function resolveCodeAction(
+    action: vscode.CodeAction,
+): Promise<vscode.CodeAction> {
+    if (isTreatAsDefinedData(action.data)) {
+        await applyTreatAsDefined(
+            action.data.identifier,
+            vscode.Uri.parse(action.data.uri),
+        );
+    }
+    return action;
 }
 
 // Function written by Cursor AI, docs written by Jonathan Wilbur
@@ -138,7 +182,6 @@ function provideRemoveImportSymbol(
         deleteSfmAction.diagnostics = [ diag ];
         deleteSfmAction.isPreferred = true;
         deleteSfmAction.edit = deleteSfmEdit;
-        deleteSfmAction.command = createUpdateDiagnosticsCommand(document);
         /* It is syntactically valid to have an empty IMPORTS like `IMPORTS ;`,
         so we do not have to worry about deleting the whole `Imports` upon
         deleting the last `SymbolsFromModule`. */
@@ -162,7 +205,6 @@ function provideRemoveImportSymbol(
         deleteSymAction.diagnostics = [ diag ];
         deleteSymAction.isPreferred = true;
         deleteSymAction.edit = deleteSymEdit;
-        deleteSymAction.command = createUpdateDiagnosticsCommand(document);
         return [deleteSymAction];
     }
 }
@@ -174,8 +216,6 @@ function provideRemoveImportSymbol(
  * This function creates a VS code action that naïvely removes some text from
  * an ASN.1 document. There is little intelligence to this other than removing
  * the newline character if nothing remains on the line.
- * 
- * This also updates the diagnostics after it runs.
  * 
  * @param document The text document
  * @param diag The diagnostic warranting the removal of something
@@ -204,7 +244,6 @@ function provideRemove(
     action.diagnostics = [ diag ];
     action.isPreferred = true;
     action.edit = edit;
-    action.command = createUpdateDiagnosticsCommand(document);
     return action;
 }
 
@@ -236,11 +275,11 @@ function provideTreatAsDefined(
         vscode.CodeActionKind.QuickFix,
     );
     action.diagnostics = [diag];
-    action.command = {
-        title: `Treat '${identifier}' as defined`,
-        command: "asn1.treatAsDefined",
-        arguments: [identifier, document.uri],
-    };
+    action.data = {
+        kind: TREAT_AS_DEFINED,
+        identifier,
+        uri: document.uri.toString(),
+    } satisfies TreatAsDefinedData;
     return action;
 }
 
@@ -289,10 +328,10 @@ async function provideCodeActionsForOneDiag(
 /**
  * @summary Provide code actions
  * @param document The text document
- * @param range The range or selection for which the command was invoked
+ * @param range The range or selection for which code actions are requested
  * @param context Code action provider context
  * @param cancel Cancellation token
- * @returns A promise that resolves to code actions or commands in an array.
+ * @returns A promise that resolves to code actions in an array.
  * @async
  * @function
  */
@@ -301,7 +340,7 @@ async function provideCodeActions(
     range: vscode.Range | vscode.Selection,
     context: vscode.CodeActionContext,
     cancel: vscode.CancellationToken,
-): Promise<(vscode.CodeAction | vscode.Command)[]> {
+): Promise<vscode.CodeAction[]> {
     const p = await getParserOutputsWithLogging(document.uri, cancel);
     if (!p) {
         return Promise.reject(null);
@@ -341,7 +380,7 @@ export class Asn1CodeActionProvider implements vscode.CodeActionProvider {
         range: vscode.Range | vscode.Selection,
         context: vscode.CodeActionContext,
         token: vscode.CancellationToken,
-    ): vscode.ProviderResult<(vscode.CodeAction | vscode.Command)[]> {
+    ): vscode.ProviderResult<vscode.CodeAction[]> {
         return provideCodeActions(document, range, context, token);
     }
 }

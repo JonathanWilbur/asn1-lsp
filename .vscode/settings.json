@@ -1,5 +1,8 @@
 {
     "deno.enable": true,
     "deno.lint": true,
-    "deno.config": "./deno.json"
+    "deno.config": "./deno.json",
+    "typescript.tsserver.experimental.enableProjectDiagnostics": false,
+    "typescript.validate.enable": false,
+    "javascript.validate.enable": false
 }

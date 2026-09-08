@@ -8,7 +8,7 @@ import { Asn1SelectionRangeProvider } from "../src/selectrange.ts";
 import { Asn1SignatureHelpProvider } from "../src/sighelp.ts";
 import { Asn1TypeDefinitionProvider } from "../src/typedef.ts";
 import { Asn1ReferenceProvider } from "../src/findallref.ts";
-import { Asn1CodeActionProvider } from "../src/codeact.ts";
+import { Asn1CodeActionProvider, resolveCodeAction } from "../src/codeact.ts";
 import { CompletionTriggerKind, Range } from "../src/vscode.ts";
 import {
     applyEdits,
@@ -20,6 +20,7 @@ import {
 } from "./helpers.ts";
 import { diagnosticCollection } from "../src/diagnostics.ts";
 import { Location } from "../src/vscode.ts";
+import { getAsn1Config } from "../src/workspace.ts";
 
 Deno.test("completions after TYPE-IDENTIFIER. suggest class fields", async () => {
     resetAll();
@@ -228,4 +229,31 @@ END
     const text = applyEdits(doc, action.edit.get(doc.uri));
     assert(!text.includes("first"));
     assert(text.includes("used"));
+});
+
+Deno.test("code action treats an undefined identifier as defined", async () => {
+    resetAll();
+    const doc = await diagnoseAsn1(`
+UndefMod DEFINITIONS ::= BEGIN
+x INTEGER ::= missingIdent
+END
+`);
+    const offset = doc.getText().indexOf("missingIdent");
+    const start = doc.positionAt(offset);
+    const end = doc.positionAt(offset + "missingIdent".length);
+    const range = new Range(start, end);
+    const actions = await new Asn1CodeActionProvider().provideCodeActions(
+        doc,
+        range,
+        { diagnostics: diagnosticCollection.get(doc.uri) },
+        neverCancelled(),
+    );
+    assert(Array.isArray(actions));
+    const action = actions.find((a) =>
+        a.title.includes("missingIdent") && a.title.toLowerCase().includes("treat")
+    );
+    assert(action);
+    assertEquals(action.edit, undefined);
+    await resolveCodeAction(action);
+    assert(getAsn1Config().alwaysDefined.includes("missingIdent"));
 });

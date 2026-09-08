@@ -21,7 +21,7 @@ Or run the server without installing:
 deno run -A jsr:@wildboar/asn1-lsp/cli
 ```
 
-Point your editor's ASN.1 language client at that command (stdio transport).
+Point your editor's ASN.1 language client at that program (stdio transport).
 
 Compiled binaries are attached to GitHub Releases (`asn1-lsp-linux-x86_64`,
 `asn1-lsp-darwin-aarch64`, `asn1-lsp-windows-x86_64.exe`, and other targets).
@@ -38,10 +38,9 @@ Compiled binaries are attached to GitHub Releases (`asn1-lsp-linux-x86_64`,
 - Selection ranges
 - Diagnostics (duplicate / unused / undefined symbols, malformed OIDs, times, strings, `COMPONENTS OF`, …)
 - Code actions: remove unused or duplicate imports, treat an identifier as defined
-- Commands: `asn1.diagnose`, `asn1.reindex-implicit-symbols`, `asn1.treatAsDefined`
 
 Syntax highlighting, snippets, and language configuration remain editor-client
-concerns. CSV/JSON export commands from the VS Code extension are not included.
+concerns. CSV/JSON export from the VS Code extension is not included.
 
 ## Configuration
 

@@ -21,7 +21,7 @@ import {
     TypeType,
     ValueType,
     keywordsForbiddenAsLiterals,
-    ProductionType,
+    type ProductionType,
     type Defined,
     translateDefinedSyntaxToDefaultSyntax,
     type DefinedSyntax,
@@ -40,7 +40,7 @@ import {
     ObjectIdentifier,
     utcTimeRegex,
     generalizedTimeRegex,
-    DURATION_EQUIVALENT,
+    type DURATION_EQUIVALENT,
 } from "@wildboar/asn1";
 
 function asciiBytes(s: string): Uint8Array {
@@ -1073,7 +1073,7 @@ async function provideHover(
                     // Just return here. It will fail later anyway.
                     return Promise.reject(null);
                 }
-                const [ defassn, defmod, defuri ] = def;
+                const [ defassn ] = def;
                 looksLikeOID = (
                     (defassn.assignmentType === AssignmentType.TypeAssignment)
                     && (

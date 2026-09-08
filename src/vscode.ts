@@ -44,7 +44,6 @@ export {
 export type {
     CancellationToken,
     CodeActionContext,
-    Command,
     CompletionContext,
     Definition,
     DefinitionLink,

@@ -7,6 +7,8 @@
     "./cli": "./cli.ts"
   },
   "imports": {
+    "@std/fs": "jsr:@std/fs@^1.0.19",
+    "@std/path": "jsr:@std/path@^1.1.2",
     "@wildboar/asn1": "jsr:@wildboar/asn1@^11.3.0",
     "@wildboar/asn1-parser": "jsr:@wildboar/asn1-parser@^2.7.1"
   },

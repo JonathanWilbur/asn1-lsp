@@ -16,14 +16,13 @@ import { Asn1CompletionItemProvider } from "../completion.ts";
 import { Asn1DocumentFormattingEditProvider } from "../format.ts";
 import { Asn1SelectionRangeProvider } from "../selectrange.ts";
 import { Asn1SignatureHelpProvider } from "../sighelp.ts";
-import { Asn1CodeActionProvider } from "../codeact.ts";
+import { Asn1CodeActionProvider, resolveCodeAction } from "../codeact.ts";
 import {
     updateDiagnostics,
     diagnosticCollection,
 } from "../diagnostics.ts";
 import {
     indexAsn1Files,
-    indexAsn1File,
     reindexAsn1File,
     deindexAsn1File,
     clearAsn1ModuleIndexes,
@@ -34,29 +33,30 @@ import { log, setLogListener } from "../logging.ts";
 import {
     CancellationTokenNone,
     CodeAction,
-    CompletionItem,
-    CompletionList,
-    Diagnostic,
-    DocumentHighlight,
-    DocumentSymbol,
-    FoldingRange,
-    Hover,
-    Location,
-    MarkdownString,
+    type CompletionItem,
+    type CompletionList,
+    type Diagnostic,
+    type DocumentHighlight,
+    type DocumentSymbol,
+    type FoldingRange,
+    type Hover,
+    type Location,
+    type MarkdownString,
     Position,
     Range,
-    SelectionRange,
-    SignatureHelp,
+    type SelectionRange,
+    type SignatureHelp,
     SnippetString,
-    SymbolInformation,
+    type SymbolInformation,
     TextDocument,
-    TextEdit,
+    type TextEdit,
     Uri,
-    WorkspaceEdit,
+    type WorkspaceEdit,
 } from "../vscode.ts";
 import {
     deleteTextDocument,
     getOpenTextDocument,
+    getOpenTextDocuments,
     setAsn1Config,
     setTextDocument,
     setWorkspaceFolders,
@@ -71,10 +71,6 @@ import {
 } from "./jsonrpc.ts";
 
 const LANGUAGE_ID = "asn1";
-
-const COMMAND_DIAGNOSE = "asn1.diagnose";
-const COMMAND_REINDEX = "asn1.reindex-implicit-symbols";
-const COMMAND_TREAT_AS_DEFINED = "asn1.treatAsDefined";
 
 interface InitializeParams {
     processId?: number | null;
@@ -304,10 +300,8 @@ export class Asn1LanguageServer {
                 ).then(toLspSignatureHelp);
             case "textDocument/codeAction":
                 return this.#codeActions(params);
-            case "workspace/executeCommand":
-                return this.#executeCommand(
-                    params as { command: string; arguments?: unknown[] },
-                );
+            case "codeAction/resolve":
+                return this.#resolveCodeAction(params);
             default:
                 if (method.startsWith("$/") || method.startsWith("telemetry/")) {
                     return;
@@ -350,13 +344,7 @@ export class Asn1LanguageServer {
                 selectionRangeProvider: true,
                 codeActionProvider: {
                     codeActionKinds: ["quickfix"],
-                },
-                executeCommandProvider: {
-                    commands: [
-                        COMMAND_DIAGNOSE,
-                        COMMAND_REINDEX,
-                        COMMAND_TREAT_AS_DEFINED,
-                    ],
+                    resolveProvider: true,
                 },
                 workspace: {
                     workspaceFolders: { supported: true },
@@ -444,11 +432,20 @@ export class Asn1LanguageServer {
         }
     }
 
-    #didChangeConfiguration(
+    async #didChangeConfiguration(
         params: { settings?: { asn1?: Partial<Asn1Config> } },
-    ): void {
+    ): Promise<void> {
         if (params.settings?.asn1) {
             setAsn1Config(params.settings.asn1);
+            await this.#refreshOpenDiagnostics();
+        }
+    }
+
+    async #refreshOpenDiagnostics(): Promise<void> {
+        for (const document of getOpenTextDocuments()) {
+            if (isAsn1(document)) {
+                await updateDiagnostics(document, diagnosticCollection);
+            }
         }
     }
 
@@ -527,65 +524,21 @@ export class Asn1LanguageServer {
         if (!actions) {
             return null;
         }
-        return (actions as (CodeAction)[]).map(toLspCodeAction);
+        return (actions as CodeAction[]).map(toLspCodeAction);
     }
 
-    async #executeCommand(
-        params: { command: string; arguments?: unknown[] },
-    ): Promise<unknown> {
-        const args = params.arguments ?? [];
-        if (params.command === COMMAND_DIAGNOSE) {
-            const uriStr = typeof args[0] === "string"
-                ? args[0]
-                : (args[0] as { uri?: string } | undefined)?.uri
-                    ?? (args[0] as Uri | undefined)?.toString();
-            if (!uriStr) {
-                return null;
-            }
-            const uri = typeof uriStr === "string" ? Uri.parse(uriStr) : uriStr as Uri;
-            const doc = getOpenTextDocument(uri);
-            if (doc) {
-                await updateDiagnostics(doc, diagnosticCollection);
-            }
-            return null;
-        }
-        if (params.command === COMMAND_REINDEX) {
-            clearNamedBitAndIntegerIndexes();
-            await indexAsn1Files();
-            const { getOpenTextDocuments } = await import("../workspace.ts");
-            for (const document of getOpenTextDocuments()) {
-                if (isAsn1(document)) {
-                    await updateDiagnostics(document, diagnosticCollection);
-                }
-            }
-            log.appendLine(`${new Date()}: named bits, integers, and enumerated variants reindexed`);
-            return null;
-        }
-        if (params.command === COMMAND_TREAT_AS_DEFINED) {
-            const identifier = args[0] as string | undefined;
-            const uriArg = args[1];
-            if (!identifier) {
-                return null;
-            }
-            const { getAsn1Config } = await import("../workspace.ts");
-            const current = getAsn1Config().alwaysDefined;
-            if (!current.includes(identifier)) {
-                setAsn1Config({ alwaysDefined: [...current, identifier] });
-            }
-            const uri = uriArg instanceof Uri
-                ? uriArg
-                : typeof uriArg === "string"
-                ? Uri.parse(uriArg)
-                : undefined;
-            if (uri) {
-                const doc = getOpenTextDocument(uri);
-                if (doc) {
-                    await updateDiagnostics(doc, diagnosticCollection);
-                }
-            }
-            return null;
-        }
-        throw new Error(`Unknown command ${params.command}`);
+    async #resolveCodeAction(params: unknown): Promise<object> {
+        const incoming = params as {
+            title: string;
+            kind?: string;
+            isPreferred?: boolean;
+            data?: unknown;
+        };
+        const action = new CodeAction(incoming.title, incoming.kind);
+        action.isPreferred = incoming.isPreferred;
+        action.data = incoming.data;
+        const resolved = await resolveCodeAction(action);
+        return toLspCodeAction(resolved);
     }
 
     async #withDocPos<T>(
@@ -806,6 +759,6 @@ function toLspCodeAction(action: CodeAction): object {
         isPreferred: action.isPreferred,
         diagnostics: action.diagnostics?.map(toLspDiagnostic),
         edit: action.edit ? toLspWorkspaceEdit(action.edit) : undefined,
-        command: action.command,
+        data: action.data,
     };
 }

@@ -48,7 +48,7 @@ const LANGUAGE: string = "asn1";
 /**
  * The diagnostic collection for ASN.1.
  */
-export let diagnosticCollection = vscode.languages.createDiagnosticCollection(LANGUAGE);
+export const diagnosticCollection = vscode.languages.createDiagnosticCollection(LANGUAGE);
 
 export const DIAG_CODE_IMPORT_SYMBOL_DUP: string = "E0001";
 export const DIAG_CODE_IMPORT_SYMBOL_UNUSED: string = "E0002";
@@ -92,7 +92,7 @@ const AT_INDEX = "at index ";
  * @function
  */
 function getRangeForWholeDocument(document: vscode.TextDocument): [vscode.Position, vscode.Position] {
-    let start = new vscode.Position(0, 0);
+    const start = new vscode.Position(0, 0);
     const lastLine = document.lineAt(document.lineCount - 1);
     const end = lastLine.range.end;
     return [start, end];
@@ -1741,7 +1741,7 @@ function asn1NonSyntaxErrorToDiag(
     code: string,
     errstring: string,
 ): vscode.Diagnostic {
-    let [start, end] = getRangeForWholeDocument(document);
+    const [start, end] = getRangeForWholeDocument(document);
     const range = e.production
         ? getRangeFromLocation(document, e.production.location)
         : new vscode.Range(start, end);

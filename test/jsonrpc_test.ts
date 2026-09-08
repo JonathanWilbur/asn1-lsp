@@ -61,6 +61,11 @@ Deno.test("LSP initialize / initialized / shutdown / exit", async () => {
         (m as { id: unknown }).id === 1
     ) as { result: { capabilities: { hoverProvider: boolean } } };
     assertEquals(init.result.capabilities.hoverProvider, true);
+    assertEquals(
+        (init.result.capabilities as { executeCommandProvider?: unknown })
+            .executeCommandProvider,
+        undefined,
+    );
 
     await server.handle({ jsonrpc: "2.0", method: "initialized", params: {} });
     assertEquals(server.initialized, true);

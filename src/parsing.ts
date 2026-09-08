@@ -305,12 +305,12 @@ export function clearParserOutputCaches(): void {
 }
 
 /**
- * @summary VS Code command to get the most recently parsed document version.
+ * @summary Get the most recently parsed document version.
  * @param uri Uniform Resource Identifier
  * @returns The most recently parsed document version, valid or not.
  * @function
  */
-export function get_last_parsed_doc_version_cmd(
+export function getLastParsedDocumentVersion(
     uri: vscode.Uri,
 ): VersionNumber | undefined {
     return cache.get(uri.toString())?.version;

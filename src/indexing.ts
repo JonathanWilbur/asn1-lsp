@@ -36,7 +36,7 @@ export function* getModuleNamesAndImportsFromTokenStream(
     text: string,
 ): IterableIterator<ModuleInfo> {
     let i = 0;
-    let importsIndex: Set<ImportKey> = new Set();
+    const importsIndex: Set<ImportKey> = new Set();
     while (i < tokens.length) {
         const token = tokens[i++];
         if (
@@ -284,8 +284,7 @@ export function isKnownNamedIntegerOrEnum(identifier: string): boolean {
  * @summary Clear the named-bit and named-integer / enumerated-variant indexes
  * @description
  *
- * This is intended to be called when the user asks to re-index these caches,
- * and upon deactivating the extension.
+ * Called on language-server shutdown and when tests reset indexing state.
  *
  * @author Cursor Grok 4.6
  * @function

@@ -44,17 +44,53 @@ export const ErrorCodes = {
 } as const;
 
 /**
- * Write a JSON-RPC message with an LSP Content-Length header.
+ * Encode a JSON-RPC message with LSP / HTTP-like `Content-Length` framing.
+ *
+ * The LSP base protocol requires each JSON body to be preceded by a header
+ * block ending in `\r\n\r\n`. `Content-Length` is a UTF-8 byte count.
+ */
+export function encodeMessage(message: unknown): Uint8Array {
+    const body = encoder.encode(JSON.stringify(message));
+    const header = encoder.encode(`Content-Length: ${body.byteLength}\r\n\r\n`);
+    const framed = new Uint8Array(header.byteLength + body.byteLength);
+    framed.set(header, 0);
+    framed.set(body, header.byteLength);
+    return framed;
+}
+
+/**
+ * Write a fully framed JSON-RPC message as a single chunk.
  */
 export async function writeMessage(
     writer: WritableStreamDefaultWriter<Uint8Array>,
     message: unknown,
 ): Promise<void> {
-    const json = JSON.stringify(message);
-    const body = encoder.encode(json);
-    const header = encoder.encode(`Content-Length: ${body.byteLength}\r\n\r\n`);
-    await writer.write(header);
-    await writer.write(body);
+    await writer.write(encodeMessage(message));
+}
+
+/**
+ * Write every byte of `data`, looping on partial `writeSync` results.
+ */
+export function writeAllSync(
+    dest: { writeSync(p: Uint8Array): number },
+    data: Uint8Array,
+): void {
+    let offset = 0;
+    while (offset < data.byteLength) {
+        const n = dest.writeSync(data.subarray(offset));
+        if (n <= 0) {
+            throw new Error("failed to write JSON-RPC framed message");
+        }
+        offset += n;
+    }
+}
+
+/**
+ * Write a framed JSON-RPC message to stdout. Synchronous so a notification
+ * cannot interleave with another message's header or body.
+ */
+export function writeMessageToStdout(message: unknown): void {
+    writeAllSync(Deno.stdout, encodeMessage(message));
 }
 
 /**

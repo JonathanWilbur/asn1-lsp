@@ -94,4 +94,4 @@ Before the first publish, link this GitHub repository to the JSR package on
 
 ## License
 
-MIT. Copyright (c) 2018-2026 Jonathan M. Wilbur.
+MIT. Copyright (c) 2026 Jonathan M. Wilbur.

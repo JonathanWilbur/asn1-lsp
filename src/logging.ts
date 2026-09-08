@@ -27,6 +27,8 @@ export const log = {
      */
     appendLine(message: string): void {
         const line = String(message);
+        /* NOTE: The use of `console.error` here is intentional. LSP servers
+        use `stdout` for messages. */
         console.error(line);
         listener?.(line);
     },

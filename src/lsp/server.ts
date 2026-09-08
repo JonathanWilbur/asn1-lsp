@@ -67,7 +67,7 @@ import {
     type JsonRpcMessage,
     type JsonRpcRequest,
     readMessages,
-    writeMessage,
+    writeMessageToStdout,
 } from "./jsonrpc.ts";
 
 const LANGUAGE_ID = "asn1";
@@ -112,19 +112,14 @@ interface DidChangeTextDocumentParams {
  */
 export async function runStdioServer(): Promise<void> {
     const stdin = Deno.stdin.readable;
-    const stdout = Deno.stdout.writable.getWriter();
     const server = new Asn1LanguageServer(async (msg) => {
-        await writeMessage(stdout, msg);
+        writeMessageToStdout(msg);
     });
-    try {
-        for await (const message of readMessages(stdin)) {
-            await server.handle(message);
-            if (server.exitRequested) {
-                break;
-            }
+    for await (const message of readMessages(stdin)) {
+        await server.handle(message);
+        if (server.exitRequested) {
+            break;
         }
-    } finally {
-        stdout.releaseLock();
     }
 }
 

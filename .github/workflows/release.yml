@@ -1,0 +1,47 @@
+name: Release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - name: Type check
+        run: deno task check
+      - name: Run unit tests
+        run: deno task test
+      - name: Compile Linux x86_64
+        run: deno compile -A --target x86_64-unknown-linux-gnu --output asn1-lsp-linux-x86_64 cli.ts
+      - name: Compile Linux aarch64
+        run: deno compile -A --target aarch64-unknown-linux-gnu --output asn1-lsp-linux-aarch64 cli.ts
+      - name: Compile macOS x86_64
+        run: deno compile -A --target x86_64-apple-darwin --output asn1-lsp-darwin-x86_64 cli.ts
+      - name: Compile macOS aarch64
+        run: deno compile -A --target aarch64-apple-darwin --output asn1-lsp-darwin-aarch64 cli.ts
+      - name: Compile Windows x86_64
+        run: deno compile -A --target x86_64-pc-windows-msvc --output asn1-lsp-windows-x86_64.exe cli.ts
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ github.event.release.tag_name }}" \
+            asn1-lsp-linux-x86_64 \
+            asn1-lsp-linux-aarch64 \
+            asn1-lsp-darwin-x86_64 \
+            asn1-lsp-darwin-aarch64 \
+            asn1-lsp-windows-x86_64.exe \
+            --clobber
+      - name: Publish to JSR
+        run: deno publish

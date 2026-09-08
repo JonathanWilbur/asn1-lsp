@@ -1,0 +1,11 @@
+# Local reference copy of the VS Code extension (not part of this package).
+vscode-asn1/
+
+# Deno / compile output
+asn1-lsp
+asn1-lsp.exe
+*.exe
+.deno/
+
+node_modules/
+

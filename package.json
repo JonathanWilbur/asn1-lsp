@@ -1,0 +1,9 @@
+{
+  "name": "@wildboar/asn1-lsp",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@wildboar/asn1": "npm:@jsr/wildboar__asn1@^11.3.0",
+    "@wildboar/asn1-parser": "npm:@jsr/wildboar__asn1-parser@^2.7.1"
+  }
+}

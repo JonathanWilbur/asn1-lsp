@@ -1,0 +1,60 @@
+{
+  "version": "5",
+  "specifiers": {
+    "jsr:@std/assert@1": "1.0.19",
+    "jsr:@std/internal@^1.0.12": "1.0.13",
+    "jsr:@wildboar/asn1-parser@^2.7.1": "2.7.1",
+    "jsr:@wildboar/asn1@^11.3.0": "11.3.0",
+    "npm:@jsr/wildboar__asn1-parser@^2.7.1": "2.7.1",
+    "npm:@jsr/wildboar__asn1@^11.3.0": "11.3.0",
+    "npm:dependency-graph@1": "1.0.0"
+  },
+  "jsr": {
+    "@std/assert@1.0.19": {
+      "integrity": "eaada96ee120cb980bc47e040f82814d786fe8162ecc53c91d8df60b8755991e",
+      "dependencies": [
+        "jsr:@std/internal"
+      ]
+    },
+    "@std/internal@1.0.13": {
+      "integrity": "2f9546691d4ac2d32859c82dff284aaeac980ddeca38430d07941e7e288725c0"
+    },
+    "@wildboar/asn1@11.3.0": {
+      "integrity": "36a1365464b6918455dd9d53b750bcd3ca934a0e145fa84b496f84611ac0e7a5"
+    },
+    "@wildboar/asn1-parser@2.7.1": {
+      "integrity": "37abae87542c2b789c6fd7884e6081d7ea4baed3d0830e5d3d7f02e8e8cc9877",
+      "dependencies": [
+        "npm:dependency-graph"
+      ]
+    }
+  },
+  "npm": {
+    "@jsr/wildboar__asn1-parser@2.7.1": {
+      "integrity": "sha512-Wt3kKvod1BQa+haFbi2fOF1clTTUt4cVHLOWpYKQtzBoQ69C9SuopbbFqwnIxzFkEvKDK/ZFbi+/EQ816QkyJg==",
+      "dependencies": [
+        "dependency-graph"
+      ],
+      "tarball": "https://npm.jsr.io/~/11/@jsr/wildboar__asn1-parser/2.7.1.tgz"
+    },
+    "@jsr/wildboar__asn1@11.3.0": {
+      "integrity": "sha512-wuCr1fY0YjS2vIBuHezsg2AIxvU32/538/RrZHWZhXCi6lPxneayM20vjobCcMQpGpFEb/gJbfPhitJhYk6oKQ==",
+      "tarball": "https://npm.jsr.io/~/11/@jsr/wildboar__asn1/11.3.0.tgz"
+    },
+    "dependency-graph@1.0.0": {
+      "integrity": "sha512-cW3gggJ28HZ/LExwxP2B++aiKxhJXMSIt9K48FOXQkm+vuG5gyatXnLsONRJdzO/7VfjDIiaOOa/bs4l464Lwg=="
+    }
+  },
+  "workspace": {
+    "dependencies": [
+      "jsr:@wildboar/asn1-parser@^2.7.1",
+      "jsr:@wildboar/asn1@^11.3.0"
+    ],
+    "packageJson": {
+      "dependencies": [
+        "npm:@jsr/wildboar__asn1-parser@^2.7.1",
+        "npm:@jsr/wildboar__asn1@^11.3.0"
+      ]
+    }
+  }
+}

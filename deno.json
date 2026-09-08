@@ -1,0 +1,42 @@
+{
+  "name": "@wildboar/asn1-lsp",
+  "version": "1.0.0",
+  "license": "MIT",
+  "exports": {
+    ".": "./mod.ts",
+    "./cli": "./cli.ts"
+  },
+  "imports": {
+    "@wildboar/asn1": "jsr:@wildboar/asn1@^11.3.0",
+    "@wildboar/asn1-parser": "jsr:@wildboar/asn1-parser@^2.7.1"
+  },
+  "tasks": {
+    "check": "deno check mod.ts cli.ts",
+    "test": "deno test -A --quiet",
+    "compile": "deno compile -A --output asn1-lsp cli.ts"
+  },
+  "publish": {
+    "include": [
+      "LICENSE",
+      "README.md",
+      "mod.ts",
+      "cli.ts",
+      "src/**/*.ts"
+    ],
+    "exclude": [
+      "test/",
+      "testdata/",
+      "vscode-asn1/"
+    ]
+  },
+  "fmt": {
+    "exclude": ["vscode-asn1/"]
+  },
+  "lint": {
+    "exclude": ["vscode-asn1/"]
+  },
+  "test": {
+    "exclude": ["vscode-asn1/"]
+  },
+  "nodeModulesDir": "none"
+}

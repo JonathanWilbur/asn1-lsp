@@ -1,0 +1,1974 @@
+import * as vscode from "./vscode.ts";
+import { getParserOutputs } from "./parsing.ts";
+import {
+    getRangeFromLocation,
+    isDefinedThing,
+    typeTypesThatCouldBeAnything,
+} from "./utils.ts";
+import {
+    parserFor,
+    grokerFor,
+    type Assignment,
+    AssignmentType,
+    type ComponentType,
+    type Defined,
+    type Module,
+    type NamedNumber,
+    type NamedType,
+    Production,
+    createGrokContext,
+    type TypeAssignment,
+    TypeType,
+    type ValueAssignment,
+    type Value,
+    ValueType,
+    type Location as Asn1ParserLocation,
+    type ObjectIdentifierValue,
+    builtinRootArcNamesToNumber,
+    type ObjIdComponents,
+    ASN1SemanticError,
+    ASN1SyntaxError,
+    ASN1ParserExpectationError,
+    isDefinedOrImported,
+    type SymbolsFromModule,
+} from "@wildboar/asn1-parser";
+import { resolveDefinedInstantly } from "./resolve.ts";
+import { maybeReparse } from "./reparse.ts";
+import {
+    isKnownNamedBit,
+    isKnownNamedIntegerOrEnum,
+} from "./indexing.ts";
+import log from "./logging.ts";
+import { DATE_REGEX, TIME_REGEX } from "./time.ts";
+import { ASN1Construction, ASN1TagClass, ASN1UniversalType, BERElement } from "@wildboar/asn1";
+import type { ASN1ModuleName } from "./types.ts";
+
+const LANGUAGE: string = "asn1";
+
+/**
+ * The diagnostic collection for ASN.1.
+ */
+export let diagnosticCollection = vscode.languages.createDiagnosticCollection(LANGUAGE);
+
+export const DIAG_CODE_IMPORT_SYMBOL_DUP: string = "E0001";
+export const DIAG_CODE_IMPORT_SYMBOL_UNUSED: string = "E0002";
+export const DIAG_CODE_ASSIGNMENT_DUP: string = "E0003";
+export const DIAG_CODE_NAMED_NUM_OR_BIT_DUP: string = "E0004";
+export const DIAG_CODE_NAMED_BIT_OR_ENUM_NEG: string = "E0005";
+export const DIAG_CODE_ENUM_NUM_DUP: string = "E0006";
+export const DIAG_CODE_COMPS_OF_NOT_TYPE: string = "E0007";
+export const DIAG_CODE_COMPS_OF_WRONG_TYPE: string = "E0008";
+export const DIAG_CODE_SET_OR_SEQ_COMP_DUP: string = "E0009";
+export const DIAG_CODE_CHOICE_ALT_DUP: string = "E0010";
+export const DIAG_CODE_SHORT_OID: string = "E0011";
+export const DIAG_CODE_OID_ROOT_ARC_NUM: string = "E0012";
+export const DIAG_CODE_OID_ROOT_ARC_NAME: string = "E0013";
+export const DIAG_CODE_OID_ROOT_ARC_MISMATCH: string = "E0014";
+export const DIAG_CODE_OID_BIG_SECOND_ARC: string = "E0015";
+export const DIAG_CODE_DATE_INVALID: string = "E0016";
+export const DIAG_CODE_DATE_DAY_INVALID: string = "E0017";
+export const DIAG_CODE_TIME_OF_DAY_INVALID: string = "E0018";
+export const DIAG_CODE_DATETIME_INVALID: string = "E0019";
+export const DIAG_CODE_DURATION_NO_P: string = "E0020";
+export const DIAG_CODE_VAL_ASSN_TYPE_NOT_TYPE: string = "E0021"; // Value assignment's type does not refer to a type assignment.
+export const DIAG_CODE_SYMBOL_NOT_DEFINED: string = "E0022";
+export const DIAG_CODE_EXPORT_NOT_DEFINED: string = "E0023";
+export const DIAG_CODE_LEX_ERROR: string = "E0024";
+export const DIAG_CODE_PARSE_ERROR: string = "E0025";
+export const DIAG_CODE_GROK_ERROR: string = "E0026";
+export const DIAG_CODE_DIAG_DISABLED: string = "E0027";
+export const DIAG_CODE_PROHIBITED_CHAR: string = "E0028";
+export const DIAG_CODE_PARAM_SYMBOL_UNUSED: string = "E0029";
+export const DIAG_CODE_IMPORT_MODULE_DUP: string = "E0030";
+export const DIAG_CODE_PARAMETER_DUP: string = "E0031";
+export const DIAG_CODE_IMPORT_MODULE_UNUSED: string = "E0032";
+
+const AT_INDEX = "at index ";
+
+/**
+ * @summary Get the start and end positions for the entire text document
+ * @param document The text document whose entire range is to be returned
+ * @returns The start and end positions for the whole text document, as a tuple of two `Position`s
+ * @function
+ */
+function getRangeForWholeDocument(document: vscode.TextDocument): [vscode.Position, vscode.Position] {
+    let start = new vscode.Position(0, 0);
+    const lastLine = document.lineAt(document.lineCount - 1);
+    const end = lastLine.range.end;
+    return [start, end];
+}
+
+/**
+ * @summary Check for duplicate or unnecessary imported symbols
+ * @param document The current text document
+ * @param mod The current ASN.1 module
+ * @param diags The output diagnostics as an array
+ * @param usedSymbols A `Set` of `string`s representing the symbols used in
+ *  this ASN.1 module.
+ * @function
+ */
+function provideImportDiagnostics(
+    document: vscode.TextDocument,
+    mod: Module,
+    diags: vscode.Diagnostic[],
+    usedSymbols: Set<string>,
+): void {
+    const encountered: Map<ASN1ModuleName, SymbolsFromModule> = new Map();
+    for (const sfm of mod.imports.modulesInOriginalOrder) {
+        const prev = encountered.get(sfm.identifier);
+        if (prev) {
+            const loc = sfm.production?.location;
+            if (!loc) {
+                continue;
+            }
+            const range = getRangeFromLocation(document, loc);
+            const diag = new vscode.Diagnostic(
+                range,
+                "module already imported before this",
+                vscode.DiagnosticSeverity.Error,
+            );
+            diag.code = DIAG_CODE_IMPORT_MODULE_DUP;
+            const modref = prev
+                .production
+                ?.children
+                .find((c) => c.type === "GlobalModuleReference")
+                ?.children[0]
+                ;
+            if (modref) {
+                const prevrange = getRangeFromLocation(document, modref.location);
+                diag.relatedInformation = [
+                    new vscode.DiagnosticRelatedInformation(
+                        new vscode.Location(document.uri, prevrange),
+                        "duplicate module first imported here",
+                    ),
+                ];
+            }
+            diags.push(diag);
+        } else {
+            encountered.set(sfm.identifier, sfm);
+        }
+    }
+    for (const sfm of Object.values(mod.imports.modules)) {
+        for (const dup of sfm.duplicateSymbols) {
+            const range = getRangeFromLocation(document, dup.location);
+            const diag = new vscode.Diagnostic(
+                range,
+                "symbol already imported before this",
+                vscode.DiagnosticSeverity.Warning,
+            );
+            diag.tags = [vscode.DiagnosticTag.Unnecessary];
+            diag.code = DIAG_CODE_IMPORT_SYMBOL_DUP;
+            diags.push(diag);
+        }
+        let anySymbolUsed: boolean = false;
+        for (const [symbol, prod] of Object.entries(sfm.symbolList)) {
+            if (!prod) {
+                continue;
+            }
+            if (!usedSymbols.has(symbol)) {
+                const range = getRangeFromLocation(document, prod.location);
+                const diag = new vscode.Diagnostic(
+                    range,
+                    "symbol not used in this asn.1 module",
+                    vscode.DiagnosticSeverity.Warning,
+                );
+                diag.tags = [vscode.DiagnosticTag.Unnecessary];
+                diag.code = DIAG_CODE_IMPORT_SYMBOL_UNUSED;
+                diags.push(diag);
+            } else {
+                anySymbolUsed = true;
+            }
+        }
+        if (!anySymbolUsed && sfm.production) {
+            const range = getRangeFromLocation(document, sfm.production.location);
+            const diag = new vscode.Diagnostic(
+                range,
+                "no symbol from this entire imported module is used anywhere",
+                vscode.DiagnosticSeverity.Warning,
+            );
+            diag.tags = [vscode.DiagnosticTag.Unnecessary];
+            diag.code = DIAG_CODE_IMPORT_MODULE_UNUSED;
+            diags.push(diag);
+        }
+    }
+}
+
+/**
+ * @summary Provide diagnostics for duplicate assignments
+ * @param document The current text document
+ * @param mod The current ASN.1 module
+ * @param diags The output diagnostics as an array
+ * @function
+ */
+function provideDuplicateAssignmentDiagnostics(
+    document: vscode.TextDocument,
+    mod: Module,
+    diags: vscode.Diagnostic[],
+): void {
+    for (const dup of mod.duplicateAssignments) {
+        const range = getRangeFromLocation(document, dup.location);
+        const diag = new vscode.Diagnostic(
+            range,
+            "identifier already assigned before this",
+            vscode.DiagnosticSeverity.Error,
+        );
+
+        // Try to link to the first assignment of this identifier.
+        const wordRange = document.getWordRangeAtPosition(range.start);
+        if (wordRange) {
+            const identifier = document.getText(wordRange);
+            const firstDef = mod.assignments[identifier];
+            if (firstDef?.production) {
+                const firstloc = firstDef.production.location;
+                const firstrange = getRangeFromLocation(document, firstloc);
+                diag.relatedInformation = [
+                    new vscode.DiagnosticRelatedInformation(
+                        new vscode.Location(document.uri, firstrange),
+                        "originally defined here",
+                    ),
+                ];
+            }
+        }
+        diag.code = DIAG_CODE_ASSIGNMENT_DUP;
+        diags.push(diag);
+    }
+}
+
+/**
+ * @summary Return a VS Code diagnostic for a problematic named number
+ * @param document The current text document
+ * @param assn The current ASN.1 assignment
+ * @param loc The location of the problematic named number
+ * @param firstloc The location of the first named number in the event of a duplicate
+ * @returns A VS Code diagnostic, or `null` if we cannot construct it
+ */
+function returnNamedNumberError(
+    document: vscode.TextDocument,
+    assn: Assignment,
+    loc?: Asn1ParserLocation,
+    firstloc?: Asn1ParserLocation,
+): vscode.Diagnostic | null {
+    if (!loc) {
+        // If we don't have a location of the named identifier,
+        // try to make the whole assignment an error.
+        const assnloc = assn.production?.location;
+        if (assnloc) {
+            const assnrange = getRangeFromLocation(document, assnloc);
+            const diag = new vscode.Diagnostic(
+                assnrange,
+                "duplicate identifier",
+                vscode.DiagnosticSeverity.Error,
+            );
+            diag.code = DIAG_CODE_NAMED_NUM_OR_BIT_DUP;
+            return diag;
+        } else {
+            // There is an error, but we absolutely cannot construct it.
+            return null;
+        }
+    }
+    const range = getRangeFromLocation(document, loc);
+    const diag = new vscode.Diagnostic(
+        range,
+        "identifier already assigned before this",
+        vscode.DiagnosticSeverity.Error,
+    );
+    diag.code = DIAG_CODE_NAMED_NUM_OR_BIT_DUP;
+    if (firstloc) {
+        const firstrange = getRangeFromLocation(document, firstloc);
+        diag.relatedInformation = [
+            new vscode.DiagnosticRelatedInformation(
+                new vscode.Location(document.uri, firstrange),
+                "duplicated identifier originally defined here",
+            ),
+        ];
+    }
+    return diag;
+}
+
+/**
+ * @summary Provide diagnostics related to named numbers, such as in an `INTEGER`, `BIT STRING`, or `ENUMERATED` type
+ * @description
+ * 
+ * This function checks for duplicate values and negatives in types that do not
+ * allow it.
+ * 
+ * @param document The current text document
+ * @param assn The current type assignment
+ * @param namednums The list of named numbers
+ * @param diags The output diagnostics as an array
+ * @param typeType The ASN.1 type of this assignment
+ * @param startOfAdditionals The index after which the extension numbers begin
+ * @function
+ */
+function provideNamedNumbersDiagnostics(
+    document: vscode.TextDocument,
+    assn: Assignment,
+    namednums: NamedNumber[],
+    diags: vscode.Diagnostic[],
+    typeType: TypeType,
+    startOfAdditionals: number = -1,
+): void {
+    const forbidNegative = (
+        (typeType === TypeType.BitStringType)
+        || (typeType === TypeType.EnumeratedType)
+    );
+    const encounteredIdentifiers: Map<string, Production | null> = new Map();
+    const encounteredNumbers: Map<number, Production | null> = new Map();
+    let largestPrevious: number = 0;
+    for (const [i, nn] of namednums.entries()) {
+        const loc = nn.production?.location;
+        if (
+            forbidNegative
+            && typeof nn.number === "number"
+            && (nn.number < 0)
+            && loc
+        ) {
+            const range = getRangeFromLocation(document, loc);
+            const diag = new vscode.Diagnostic(
+                range,
+                "negative values not allowed",
+                vscode.DiagnosticSeverity.Error,
+            );
+            diag.code = DIAG_CODE_NAMED_BIT_OR_ENUM_NEG;
+            diags.push(diag);
+        }
+
+        // Check for duplicate identifiers
+        const firstIdent = encounteredIdentifiers.get(nn.identifier);
+        if (typeof firstIdent !== "undefined") { // Already defined
+            const diag = returnNamedNumberError(document, assn, loc, firstIdent?.location);
+            if (diag) {
+                diags.push(diag);
+            }
+        } else {
+            encounteredIdentifiers.set(nn.identifier, nn.production ?? null);
+        }
+
+        // Check for duplicate numbers
+        if (typeof nn.number === "number") {
+            const firstNum = encounteredNumbers.get(nn.number);
+            if (typeof firstNum !== "undefined") { // Already defined
+                const diag = returnNamedNumberError(document, assn, loc, firstNum?.location);
+                if (diag) {
+                    diags.push(diag);
+                }
+            } else {
+                encounteredNumbers.set(nn.number, nn.production ?? null);
+            }
+        }
+
+        if (
+            (typeType === TypeType.EnumeratedType)
+            && (startOfAdditionals > -1)
+            && (i >= startOfAdditionals)
+            && (typeof nn.number === "number")
+            && (nn.number <= largestPrevious)
+            && nn.production
+        ) {
+            const range = getRangeFromLocation(document, nn.production.location);
+            const diag = new vscode.Diagnostic(
+                range,
+                "number already assigned before this (violation of ITU-T Recommendation X.680, Section 20.4)",
+                vscode.DiagnosticSeverity.Error,
+            );
+            diag.code = DIAG_CODE_ENUM_NUM_DUP;
+            diags.push(diag);
+        }
+
+        if (typeof nn.number === "number") {
+            largestPrevious = nn.number;
+        }
+    }
+}
+
+/**
+ * ASN.1 type to a string representation
+ */
+const typeTypeToString: Map<TypeType, string> = new Map([
+    [TypeType.SequenceType, "SEQUENCE"],
+    [TypeType.SetType, "SET"],
+    [TypeType.ChoiceType, "CHOICE"],
+]);
+
+/**
+ * 
+ * @param document The current document
+ * @param mod The current ASN.1 module
+ * @param def The current `DefinedType` used in a `COMPONENTS OF` component
+ * @param diags The output diagnostics as an array
+ * @param expectedType The expected ASN.1 type (`SET`, `SEQUENCE`, or `CHOICE`)
+ * @param recursionTTL The recursion TTL: number of recursions until this function
+ *  returns immediately.
+ * @returns The component types in an array, or `null` if there was a problem
+ *  resolving them.
+ */
+function resolveComponentsOf(
+    document: vscode.TextDocument,
+    mod: Module,
+    def: Defined,
+    diags: vscode.Diagnostic[],
+    expectedType: TypeType,
+    recursionTTL: number = 5,
+): ComponentType[] | null {
+    if (recursionTTL <= 0) {
+        return null;
+    }
+    recursionTTL--;
+    if (
+        def.module // If imported, don't bother checking.
+        || !def.production?.location
+        || !typeTypeToString.has(expectedType)
+    ) {
+        return null;
+    }
+    const range = getRangeFromLocation(document, def.production.location);
+    const assn = mod.assignments[def.reference];
+    if (!assn) {
+        // COMPONENTS OF must have been imported. Looking no further.
+        return null;
+    }
+    if (assn.assignmentType !== AssignmentType.TypeAssignment) {
+        const diag = new vscode.Diagnostic(
+            range,
+            "reference does not point to a type assignment",
+            vscode.DiagnosticSeverity.Error,
+        );
+        diag.code = DIAG_CODE_COMPS_OF_NOT_TYPE;
+        diags.push(diag);
+        return null;
+    }
+    if (
+        (assn.type.typeType !== expectedType)
+        && !typeTypesThatCouldBeAnything.has(assn.type.typeType)
+    ) {
+        const diag = new vscode.Diagnostic(
+            range,
+            "reference does not refer to a " + typeTypeToString.get(expectedType)! + " type",
+            vscode.DiagnosticSeverity.Error,
+        );
+        diag.code = DIAG_CODE_COMPS_OF_WRONG_TYPE;
+        diags.push(diag);
+        return null;
+    }
+    const ret: ComponentType[] = [];
+    if (
+        assn.type.typeType === TypeType.SequenceType
+        || assn.type.typeType === TypeType.SetType
+    ) {
+        const t = assn.type.type;
+        const components: ComponentType[] = [
+            ...t.rootComponentTypeList1 ?? [],
+            ...t.rootComponentTypeList2 ?? [],
+            ...(t.extensionAdditionList ?? [])
+                .flatMap((eal) => ("componentTypeList" in eal)
+                    ? eal.componentTypeList
+                    : eal),
+        ];
+        for (const component of components) {
+            if ("componentsOf" in component) {
+                if (component.componentsOf.typeType === TypeType.DefinedType) {
+                    const def = component.componentsOf.type;
+                    const resolved = resolveComponentsOf(
+                        document,
+                        mod,
+                        def,
+                        diags,
+                        expectedType,
+                        recursionTTL,
+                    );
+                    resolved && ret.push(...resolved);
+                }
+            } else {
+                ret.push(component);
+            }
+        }
+    }
+    return ret;
+}
+
+/**
+ * @summary Provide diagnostics related to an ASN.1 `SET` or `SEQUENCE` type assignment
+ * @param document The current text document
+ * @param mod The current ASN.1 module
+ * @param assn The current type assignment
+ * @param diags The output diagnostics as an array
+ * @function
+ */
+function provideSetOrSeqTypeAssnDiagnostics(
+    document: vscode.TextDocument,
+    mod: Module,
+    assn: TypeAssignment,
+    diags: vscode.Diagnostic[],
+): void {
+    if (
+        (assn.type.typeType !== TypeType.SequenceType)
+        && (assn.type.typeType !== TypeType.SetType)
+    ) {
+        return;
+    }
+    const t = assn.type.type;
+    const components: ComponentType[] = [
+        ...t.rootComponentTypeList1 ?? [],
+        ...t.rootComponentTypeList2 ?? [],
+        ...(t.extensionAdditionList ?? [])
+            .flatMap((eal) => ("componentTypeList" in eal)
+                ? eal.componentTypeList
+                : eal),
+    ];
+    const encounteredNames: Map<string, Production | null> = new Map();
+    // First pass: replicate and validate all COMPONENTS OF
+    for (const component of components) {
+        if ("componentsOf" in component) {
+            if (component.componentsOf.typeType === TypeType.DefinedType) {
+                const def = component.componentsOf.type;
+                const resolved = resolveComponentsOf(
+                    document, mod, def, diags, assn.type.typeType);
+                for (const rc of resolved ?? []) {
+                    if ("namedType" in rc) {
+                        encounteredNames.set(
+                            rc.namedType.identifier,
+                            rc.namedType.production ?? null,
+                        );
+                    }
+                }
+            }
+        }
+    }
+    // Second pass: check for no duplicate component names.
+    for (const component of components) {
+        if (!("namedType" in component)) {
+            continue;
+        }
+        const nt = component.namedType;
+        const firstComp = encounteredNames.get(nt.identifier);
+        if (typeof firstComp !== "undefined") { // Already defined
+            const loc = nt.production?.location ?? assn.production?.location;
+            if (loc) {
+                const range = getRangeFromLocation(document, loc);
+                const diag = new vscode.Diagnostic(
+                    range,
+                    "duplicate component",
+                    vscode.DiagnosticSeverity.Error,
+                );
+                if (nt.production?.location && firstComp?.location) {
+                    const range = getRangeFromLocation(document, firstComp.location);
+                    diag.relatedInformation = [
+                        new vscode.DiagnosticRelatedInformation(
+                            new vscode.Location(document.uri, range),
+                            "duplicated component first defined here",
+                        ),
+                    ];
+                }
+                diag.code = DIAG_CODE_SET_OR_SEQ_COMP_DUP;
+                diags.push(diag);
+            }
+        } else {
+            encounteredNames.set(nt.identifier, nt.production ?? null);
+        }
+    }
+}
+
+/**
+ * @summary Provide diagnostics related to an ASN.1 type assignment
+ * @param document The current text document
+ * @param mod The current ASN.1 module
+ * @param assn The current type assignment
+ * @param diags The output diagnostics as an array
+ * @function
+ */
+function provideTypeAssignmentDiagnostics(
+    document: vscode.TextDocument,
+    mod: Module,
+    assn: TypeAssignment,
+    diags: vscode.Diagnostic[],
+): void {
+    if (
+        (assn.type.typeType === TypeType.BitStringType)
+        && assn.type.type.namedBitList
+    ) {
+        const namedBitList = assn.type.type.namedBitList;
+        provideNamedNumbersDiagnostics(
+            document,
+            assn,
+            namedBitList,
+            diags,
+            assn.type.typeType,
+        );
+    }
+
+    if (
+        (assn.type.typeType === TypeType.IntegerType)
+        && assn.type.type.namedNumberList
+    ) {
+        const namedNums = assn.type.type.namedNumberList;
+        provideNamedNumbersDiagnostics(
+            document,
+            assn,
+            namedNums,
+            diags,
+            assn.type.typeType,
+        );
+    }
+
+    if (
+        (assn.type.typeType === TypeType.EnumeratedType)
+        && assn.type.type.items
+    ) {
+        let unassigneds: number = 0;
+        const items = assn.type.type.items;
+        const namedNums: NamedNumber[] = items
+            .map((item): NamedNumber => ({
+                identifier: item.identifier,
+                number: item.number ?? unassigneds++,
+                production: item.production,
+            }));
+        const firstaddl = items.findIndex((item) => item.additional);
+        const addls = (
+            firstaddl > -1
+            && items.slice(firstaddl).every((item) => item.additional)
+        )
+            ? firstaddl
+            : -1;
+        provideNamedNumbersDiagnostics(
+            document,
+            assn,
+            namedNums,
+            diags,
+            assn.type.typeType,
+            addls,
+        );
+    }
+
+    if (
+        (assn.type.typeType === TypeType.SequenceType)
+        || (assn.type.typeType === TypeType.SetType)
+    ) {
+        provideSetOrSeqTypeAssnDiagnostics(
+            document,
+            mod,
+            assn,
+            diags,
+        );
+    }
+
+    if (assn.type.typeType === TypeType.ChoiceType) {
+        const t = assn.type.type;
+        const namedTypes: NamedType[] = [
+            ...t.rootAlternativeTypeList,
+            ...(t.extensionAdditionAlternatives ?? [])
+                .flatMap((eal) => ("alternativeTypeList" in eal)
+                    ? eal.alternativeTypeList
+                    : eal),
+        ];
+
+        const encounteredIdentifiers: Map<string, Production | null> = new Map();
+        for (const nt of namedTypes) {
+            const firstAlt = encounteredIdentifiers.get(nt.identifier);
+            if (typeof firstAlt !== "undefined") { // Already defined
+                const loc = nt.production?.location ?? assn.production?.location;
+                if (loc) {
+                    const range = getRangeFromLocation(document, loc);
+                    const diag = new vscode.Diagnostic(
+                        range,
+                        "duplicate alternative identifier",
+                        vscode.DiagnosticSeverity.Error,
+                    );
+                    if (nt.production?.location && firstAlt?.location) {
+                        const range = getRangeFromLocation(document, firstAlt.location);
+                        diag.relatedInformation = [
+                            new vscode.DiagnosticRelatedInformation(
+                                new vscode.Location(document.uri, range),
+                                "duplicated alternative identifier first defined here",
+                            ),
+                        ];
+                    }
+                    diag.code = DIAG_CODE_CHOICE_ALT_DUP;
+                    diags.push(diag);
+                }
+            } else {
+                encounteredIdentifiers.set(nt.identifier, nt.production ?? null);
+            }
+        }
+    }
+}
+
+/**
+ * @summary Provide diagnostics related to an object identifier value
+ * @description
+ * 
+ * Checks if:
+ * 
+ * - The object identifier is only one or zero arcs long
+ * - The object identifier has an unrecognized first arc by name
+ * - The object identifier has an invalid first arc number
+ * - The object identifier has a mismatching first arc name and number
+ * - The object identifier has a second arc > 39 if the first is 0 or 1
+ * 
+ * @param document The current text document
+ * @param value The object identifier value
+ * @param diags The output diagnostics as an array
+ * @function
+ */
+function provideOIDValueDiagnostics(
+    document: vscode.TextDocument,
+    value: ObjectIdentifierValue,
+    diags: vscode.Diagnostic[],
+): void {
+    if (!value.production?.location) {
+        return;
+    }
+    const oidrange = getRangeFromLocation(document, value.production.location);
+    if (
+        value.prefix
+        && !value.prefix.module
+        && !builtinRootArcNamesToNumber.has(value.prefix.reference)
+    ) {
+        // There is a prefix and it wasn't just a root arc name mistaken for a prefix.
+        return;
+    }
+    const prefixIsBuiltIn = value.prefix && builtinRootArcNamesToNumber.has(value.prefix.reference);
+    const needRemainingArcs =prefixIsBuiltIn ? 1 : 2;
+    if (value.components.length < needRemainingArcs) {
+        const diag = new vscode.Diagnostic(
+            oidrange,
+            "an object identifier cannot be shorter than two arcs",
+            vscode.DiagnosticSeverity.Error,
+        );
+        diag.code = DIAG_CODE_SHORT_OID;
+        diags.push(diag);
+        return;
+    }
+    const arcs = value.components;
+    const first: ObjIdComponents = prefixIsBuiltIn
+        ? {
+            name: value.prefix?.reference!,
+            production: value.prefix?.production,
+        }
+        : arcs[0];
+    const second = prefixIsBuiltIn ? arcs[0] : arcs[1];
+    let firstnum = ("number" in first && typeof first.number === "number")
+        ? first.number
+        : undefined;
+    const firstloc = first.production?.location ?? value.production.location;
+    const firstrange = getRangeFromLocation(document, firstloc);
+    if ((typeof firstnum === "number") && (firstnum < 0 || firstnum > 2)) {
+        const diag = new vscode.Diagnostic(
+            firstrange,
+            "invalid root arc number. must be 0, 1, or 2.",
+            vscode.DiagnosticSeverity.Error,
+        );
+        diag.code = DIAG_CODE_OID_ROOT_ARC_NUM;
+        diags.push(diag);
+    }
+    if ("name" in first && typeof first.name === "string") {
+        const name = first.name;
+        if (!builtinRootArcNamesToNumber.has(name)) {
+            const diag = new vscode.Diagnostic(
+                firstrange,
+                "unrecognized root arc identifier. must be one of: "
+                + Array.from(builtinRootArcNamesToNumber.values()).join(", "),
+                vscode.DiagnosticSeverity.Error,
+            );
+            diag.code = DIAG_CODE_OID_ROOT_ARC_NAME;
+            diags.push(diag);
+        }
+        if (
+            (typeof firstnum === "number")
+            && (builtinRootArcNamesToNumber.get(name) !== firstnum)
+        ) {
+            const diag = new vscode.Diagnostic(
+                firstrange,
+                "mismatching root arc name and number. the correct number is "
+                + builtinRootArcNamesToNumber.get(name) + ".",
+                vscode.DiagnosticSeverity.Error,
+            );
+            diag.code = DIAG_CODE_OID_ROOT_ARC_MISMATCH;
+            diags.push(diag);
+        }
+        firstnum = builtinRootArcNamesToNumber.get(name)!;
+    }
+    if (typeof firstnum !== "number" || (firstnum === 2)) {
+        return;
+    }
+    const secondloc = second.production?.location ?? value.production.location;
+    const secondrange = getRangeFromLocation(document, secondloc);
+    if (
+        "number" in second
+        && typeof second.number === "number"
+        && second.number > 39
+    ) {
+        const diag = new vscode.Diagnostic(
+            secondrange,
+            "the second arc cannot be > 39 if the first arc is 0 or 1",
+            vscode.DiagnosticSeverity.Error,
+        );
+        diag.code = DIAG_CODE_OID_BIG_SECOND_ARC;
+        diags.push(diag);
+    }
+}
+
+/**
+ * The number of days in a month, assuming it is a leap year.
+ */
+const daysInMonth: Map<string, number> = new Map([
+    ["01", 31],
+    ["02", 29],
+    ["03", 31],
+    ["04", 30],
+    ["05", 31],
+    ["06", 30],
+    ["07", 31],
+    ["08", 31],
+    ["09", 30],
+    ["10", 31],
+    ["11", 30],
+    ["12", 31],
+]);
+
+/**
+ * @summary Provide diagnostics for a `DATE` string
+ * @param s The `DATE` string, such as "2020-01-31"
+ * @param range The range of the string in the document
+ * @param diags The output diagnostics as an array
+ * @function
+ */
+function provideDateDiagnostics(
+    s: string,
+    range: vscode.Range,
+    diags: vscode.Diagnostic[],
+): void {
+    const match = DATE_REGEX.exec(s);
+    if (!match) {
+        const diag = new vscode.Diagnostic(
+            range,
+            "invalid date. must be in yyyy-mm-dd format.",
+            vscode.DiagnosticSeverity.Error,
+        );
+        diag.code = DIAG_CODE_DATE_INVALID;
+        diags.push(diag);
+        return;
+    }
+    const [, y, m, d] = match;
+    const year = Number(y);
+    const day = Number(d);
+    let maxDays = daysInMonth.get(m) ?? 31;
+    if (((year % 4) === 0) && maxDays === 29) {
+        maxDays--;
+    }
+    if (day > maxDays) {
+        const diag = new vscode.Diagnostic(
+            range,
+            "invalid date: day not valid, given the month or leap-year status",
+            vscode.DiagnosticSeverity.Error,
+        );
+        diag.code = DIAG_CODE_DATE_DAY_INVALID;
+        diags.push(diag);
+    }
+}
+
+/**
+ * @summary Provide diagnostics for a `TIME-OF-DAY` string
+ * @param s The `TIME-OF-DAY` string, such as "12:29:43"
+ * @param range The range of the string in the document
+ * @param diags The output diagnostics as an array
+ * @function
+ */
+function provideTimeOfDayDiagnostics(
+    s: string,
+    range: vscode.Range,
+    diags: vscode.Diagnostic[],
+): void {
+    const match = TIME_REGEX.exec(s);
+    if (!match) {
+        const diag = new vscode.Diagnostic(
+            range,
+            "invalid time of day. must be in hh:mm:ss format.",
+            vscode.DiagnosticSeverity.Error,
+        );
+        diag.code = DIAG_CODE_TIME_OF_DAY_INVALID;
+        diags.push(diag);
+    }
+    // No further validation needed. The regex is sufficient.
+}
+
+/**
+ * @summary Use a `BERElement` from `@wildboar/asn1` to validate a string-like type
+ * @description
+ * 
+ * Instead of writing all the code to validate ASN.1 values again, I can just
+ * use the code that's already in `@wildboar/asn1`: this function just encodes
+ * your string into the content octets of a Basic Encoding Rules value encoding
+ * and you provide a `test` function that takes that element and checks if it
+ * is valid (usually by invoking a getter / accessor).
+ * 
+ * @param s The string to encode
+ * @param range The range of the string
+ * @param tagnum The `UNIVERSAL` tag number corresponding to the type of the string
+ * @param test A function to test whether encoding worked, which takes a BER-encoded tag-length-value `BERElement`
+ * @param diags The output diagnostics as an array
+ * @param code The error code
+ * @function
+ */
+function useDecodingToProvideDiagnostics(
+    s: string,
+    range: vscode.Range,
+    tagnum: ASN1UniversalType,
+    test: (el: BERElement) => unknown,
+    diags: vscode.Diagnostic[],
+    code?: string,
+): void {
+    let el: BERElement;
+    try {
+        el = new BERElement(
+            ASN1TagClass.universal,
+            ASN1Construction.primitive,
+            tagnum,
+            s,
+        );
+    } catch {
+        return; // Not sure what went wrong here.
+    }
+    try {
+        test(el);
+    } catch (e) {
+        const diag = new vscode.Diagnostic(
+            range,
+            `${e}`,
+            vscode.DiagnosticSeverity.Error,
+        );
+        if (code) {
+            diag.code = code;
+        }
+        diags.push(diag);
+    }
+}
+
+/**
+ * @summary Provide diagnostics for a string-like type
+ * @description
+ * 
+ * This provides diagnostics for:
+ * 
+ * - `DATE`
+ * - `TIME-OF-DAY`
+ * - `DATE-TIME`
+ * - `DURATION`
+ * - `UTCTime`
+ * - `GeneralizedTime`
+ * - `OID-IRI`
+ * - `RELATIVE-OID-IRI`
+ * - `PrintableString`
+ * - `NumericString`
+ * - `ISO646String` / `IA5String`
+ * 
+ * @param document The current text document
+ * @param s The string to diagnose
+ * @param value The value
+ * @param typeType The ASN.1 type type
+ * @param diags The output diagnostics as an array
+ * @function
+ */
+function provideStringDiagnostics(
+    document: vscode.TextDocument,
+    s: string,
+    value: Value,
+    typeType: TypeType,
+    diags: vscode.Diagnostic[],
+): void {
+    if (!value.production) {
+        return;
+    }
+    const loc = value.production.location;
+    const range = getRangeFromLocation(document, loc);
+    switch (typeType) {
+        case (TypeType.DateType): {
+            return provideDateDiagnostics(s, range, diags);
+        }
+        case (TypeType.TimeOfDayType): {
+            return provideTimeOfDayDiagnostics(s, range, diags);
+        }
+        case (TypeType.DateTimeType): {
+            if (s[10] !== "T") {
+                const diag = new vscode.Diagnostic(
+                    range,
+                    "malformed datetime. must be in yyyy-mm-ddThh:mm:ss format.",
+                    vscode.DiagnosticSeverity.Error,
+                );
+                diag.code = DIAG_CODE_DATETIME_INVALID;
+                diags.push(diag);
+                return;
+            }
+            const d = s.slice(0, 10);
+            const t = s.slice(11);
+            provideDateDiagnostics(d, range, diags);
+            provideTimeOfDayDiagnostics(t, range, diags);
+            return;
+        }
+        case (TypeType.DurationType): {
+            if (!s.startsWith("P")) {
+                const diag = new vscode.Diagnostic(
+                    range,
+                    "malformed duration. must start with a capital 'P'.",
+                    vscode.DiagnosticSeverity.Error,
+                );
+                diag.code = DIAG_CODE_DURATION_NO_P;
+                diags.push(diag);
+                return;  
+            }
+            return useDecodingToProvideDiagnostics(
+                s.slice(1),
+                range,
+                ASN1UniversalType.duration,
+                (el) => el.duration,
+                diags,
+            );
+        }
+        case (TypeType.UTCTime): {
+            return useDecodingToProvideDiagnostics(
+                s,
+                range,
+                ASN1UniversalType.utcTime,
+                (el) => el.utcTime,
+                diags,
+            );
+        }
+        case (TypeType.GeneralizedTime): {
+            return useDecodingToProvideDiagnostics(
+                s,
+                range,
+                ASN1UniversalType.generalizedTime,
+                (el) => el.generalizedTime,
+                diags,
+            );
+        }
+        case (TypeType.IRIType): {
+            return useDecodingToProvideDiagnostics(
+                s,
+                range,
+                ASN1UniversalType.oidIRI,
+                (el) => el.oidIRI,
+                diags,
+            );
+        }
+        case (TypeType.RelativeIRIType): {
+            return useDecodingToProvideDiagnostics(
+                s,
+                range,
+                ASN1UniversalType.roidIRI,
+                (el) => el.relativeOIDIRI,
+                diags,
+            );
+        }
+        case (TypeType.PrintableString): {
+            return useDecodingToProvideDiagnostics(
+                s,
+                range,
+                ASN1UniversalType.printableString,
+                (el) => el.printableString,
+                diags,
+                DIAG_CODE_PROHIBITED_CHAR,
+            );
+        }
+        case (TypeType.NumericString): {
+            return useDecodingToProvideDiagnostics(
+                s,
+                range,
+                ASN1UniversalType.numericString,
+                (el) => el.numericString,
+                diags,
+                DIAG_CODE_PROHIBITED_CHAR,
+            );
+        }
+        // These are the same. I don't know why I have duplicates
+        case (TypeType.ISO646String):
+        case (TypeType.IA5String): {
+            return useDecodingToProvideDiagnostics(
+                s,
+                range,
+                ASN1UniversalType.ia5String,
+                (el) => el.ia5String,
+                diags,
+                DIAG_CODE_PROHIBITED_CHAR,
+            );
+        }
+        default: return;
+    }
+}
+
+/**
+ * @summary Provide diagnostics related to an ASN.1 value assignment
+ * @param document The current text document
+ * @param mod The current ASN.1 module
+ * @param assn The current value assignment
+ * @param diags The output diagnostics as an array
+ * @function
+ */
+function provideValueAssignmentDiagnostics(
+    document: vscode.TextDocument,
+    mod: Module,
+    assn: ValueAssignment,
+    diags: vscode.Diagnostic[],
+): void {
+    let dereftype: TypeType = assn.type.typeType;
+    if (assn.type.typeType === TypeType.DefinedType) {
+        const def = assn.type.type;
+        const derefassn = resolveDefinedInstantly(mod, def);
+        if (!derefassn) {
+            // If we can't figure out what type it really is,
+            // we cannot validate the value with confidence.
+            return;
+        }
+        if (
+            (derefassn.assignmentType !== AssignmentType.ParameterizedTypeAssignment)
+            && (derefassn.assignmentType !== AssignmentType.TypeAssignment)
+        ) {
+            if (assn.production?.location) {
+                const range = getRangeFromLocation(document, assn.production.location);
+                const diag = new vscode.Diagnostic(
+                    range,
+                    "defined type " + def.reference + " does not refer to a type assignment",
+                    vscode.DiagnosticSeverity.Error,
+                );
+                diag.code = DIAG_CODE_VAL_ASSN_TYPE_NOT_TYPE;
+                diags.push(diag);
+            }
+            return;
+        }
+        dereftype = derefassn.type.typeType;
+    }
+    if (dereftype === TypeType.DefinedType) {
+        // Again, cannot determine the type, so cannot validate the value.
+        return;
+    }
+
+    const vt = assn.value.valueType;
+    const vtext = assn.value.text;
+    switch (dereftype) {
+        case (TypeType.ObjectIdentifierType): {
+            const reparsed: ObjectIdentifierValue | null =
+                (vt === ValueType.ObjectIdentifierValue)
+                    ? assn.value.value
+                    : maybeReparse(
+                        assn.value,
+                        parserFor.ObjectIdentifierValue,
+                        grokerFor.ObjectIdentifierValue,
+                    );
+            if (!reparsed) {
+                // This value might be malformed. Not sure.
+                return;
+            }
+            provideOIDValueDiagnostics(document, reparsed, diags);
+            return;
+        }
+        case (TypeType.DateType):
+        case (TypeType.TimeOfDayType):
+        case (TypeType.DateTimeType):
+        case (TypeType.DurationType):
+        case (TypeType.UTCTime):
+        case (TypeType.GeneralizedTime):
+        case (TypeType.IRIType):
+        case (TypeType.RelativeIRIType):
+        case (TypeType.PrintableString):
+        case (TypeType.NumericString):
+        case (TypeType.ISO646String):
+        case (TypeType.IA5String):
+        {
+            let s: string = vtext;
+            if (s === undefined) {
+                // This value might be malformed. Not sure.
+                return;
+            }
+            if (!s.startsWith('"')) {
+                return;
+            }
+            s = s.slice(1, -1);
+            provideStringDiagnostics(document, s, assn.value, dereftype, diags);
+            return;
+        }
+        default: return;
+    }
+}
+
+/**
+ * @summary Provide diagnostics related to an ASN.1 assignment
+ * @param document The current text document
+ * @param mod The current ASN.1 module
+ * @param assn The current assignment
+ * @param diags The output diagnostics as an array
+ * @function
+ */
+function provideAssignmentDiagnostics(
+    document: vscode.TextDocument,
+    mod: Module,
+    assn: Assignment,
+    diags: vscode.Diagnostic[],
+): void {
+    // Duplicate parameters are already detected by parsing / groking, currently.
+    // if (assn.parameters?.length) {
+    //     const params = assn.parameters;
+    //     const encountered: Map<string, Production | null> = new Map();
+    //     for (const param of params) {
+    //         const first = encountered.get(param.dummyReference);
+    //         if (typeof first !== "undefined") {
+    //             // The parameter is duplicate.
+    //             const loc = param.production?.location ?? assn.production?.location;
+    //             if (!loc) {
+    //                 continue;
+    //             }
+    //             const range = getRangeFromLocation(document, loc);
+    //             const diag = new vscode.Diagnostic(
+    //                 range,
+    //                 "duplicate parameter name",
+    //                 vscode.DiagnosticSeverity.Error,
+    //             );
+    //             diag.code = DIAG_CODE_PARAMETER_DUP;
+    //             if (first?.location) {
+    //                 const firstRange = getRangeFromLocation(document, first.location);
+    //                 diag.relatedInformation = [
+    //                     new vscode.DiagnosticRelatedInformation(
+    //                         new vscode.Location(document.uri, firstRange),
+    //                         "first defined here",
+    //                     ),
+    //                 ];
+    //             }
+    //             diags.push(diag);
+    //         } else {
+    //             encountered.set(param.dummyReference, param.production ?? null);
+    //         }
+    //     }
+    // }
+    if (assn.assignmentType === AssignmentType.TypeAssignment) {
+        provideTypeAssignmentDiagnostics(document, mod, assn, diags);
+    }
+    if (assn.assignmentType === AssignmentType.ValueAssignment) {
+        provideValueAssignmentDiagnostics(document, mod, assn, diags);
+    }
+}
+
+/**
+ * @summary Provide diagnostics related to the assignments of a module
+ * @param document The current text document
+ * @param mod The current ASN.1 module
+ * @param diags The output diagnostics as an array
+ * @function
+ */
+function provideAssignmentListDiagnostics(
+    document: vscode.TextDocument,
+    mod: Module,
+    diags: vscode.Diagnostic[],
+): void {
+    for (const assn of Object.values(mod.assignments)) {
+        try {
+            provideAssignmentDiagnostics(document, mod, assn, diags);
+        } catch (e) {
+            log.appendLine(`failed to provide diagnostics for assignment ${assn.identifier}: ${e}`);
+        }
+    }
+}
+
+/**
+ * Grammatical productions of these types cannot have `Defined*` productions
+ * within them. We can skip over these, and therefore lop off entire useless
+ * subtrees of the concrete syntax tree (CST), to make scanning for unassigned
+ * references faster.
+ */
+const selfContainedProductions: Set<string> = new Set([
+    "ArcIdentifier",
+    "AtNotation",
+    "BooleanType",
+    "BooleanValue",
+    "Class",
+    "comment",
+    "DateTimeType",
+    "DateType",
+    "DummyReference",
+    "DurationType",
+    "EmbeddedPDVType",
+    "EmptyElementReal",
+    "EncodingControlSection",
+    "EncodingControlSections",
+    "EncodingReference",
+    "EnumeratedValue",
+    "ExternalType",
+    "FirstArcIdentifier",
+    "FirstRelativeArcIdentifier",
+    "IdentifierList",
+    "IntegerValue",
+    "IRIType",
+    "IRIValue",
+    "Level",
+    "Literal",
+    "NameForm",
+    "NullType",
+    "NullValue",
+    "ObjectIdentifierType",
+    "OctetStringType",
+    "PresenceConstraint",
+    "PropertySettings",
+    "Quadruple",
+    "RealType",
+    "RelativeIRIType",
+    "RelativeIRIValue",
+    "RelativeOIDType",
+    "RestrictedCharacterStringType",
+    "SelectionOption",
+    "SignedNumber",
+    "SpecialRealValue",
+    "SubsequentArcIdentifier",
+    "SyntaxList",
+    "TableColumn",
+    "TableRow",
+    "TextReal",
+    "TimeOfDayType",
+    "TimeType",
+    "TimeValue",
+    "Tuple",
+    "UnrestrictedCharacterStringType",
+    "UsefulObjectClassReference",
+    "UsefulType",
+    "VersionNumber",
+    "whitespace",
+    "WithSyntaxSpec",
+    "XMLBooleanValue",
+    "XMLEnumeratedValue",
+    "XMLIdentifierList",
+    "XMLIntegerValue",
+    "XMLIRIValue",
+    "XMLNullValue",
+    "XMLNumericRealValue",
+    "XMLObjectIdentifierValue",
+    "XMLRealValue",
+    "XMLRelativeIRIValue",
+    "XMLRelativeOIDValue",
+    "XMLRestrictedCharacterStringValue",
+    "XMLTimeValue",
+]);
+
+const SYMBOL_NOT_DEFINED: string = "symbol not assigned in this module, nor imported";
+
+/**
+ * @summary Determine whether an identifier is a curly-bracket list item
+ * @description
+ *
+ * After skipping whitespace, the previous character must be `{` or `,` and the
+ * next character must be `}` or `,`. This treats `{ sunday, monday }` as a
+ * named-bit list while leaving `KIND auxiliary` on the enumerated / named
+ * integer path, even though that variant sits inside an information object.
+ *
+ * @param document The current text document
+ * @param loc The location of the identifier (or `Defined*` production)
+ * @returns `true` if the identifier appears as a curly-bracket list item
+ * @author Cursor Grok 4.6
+ * @function
+ */
+function identifierAppearsInCurlyBrackets(
+    document: vscode.TextDocument,
+    loc: Asn1ParserLocation,
+): boolean {
+    const text = document.getText();
+    let prev = loc.startIndex - 1;
+    while (prev >= 0 && /\s/.test(text.charAt(prev))) {
+        prev--;
+    }
+    let next = loc.endIndex;
+    while (next < text.length && /\s/.test(text.charAt(next))) {
+        next++;
+    }
+    const prevChar = prev >= 0 ? text.charAt(prev) : "";
+    const nextChar = next < text.length ? text.charAt(next) : "";
+    return (prevChar === "{" || prevChar === ",") && (nextChar === "}" || nextChar === ",");
+}
+
+/**
+ * @summary Read the `asn1.alwaysDefined` configuration as a set of identifiers
+ * @returns A set of identifiers that should never be diagnosed as undefined
+ * @author Cursor Grok 4.6
+ * @function
+ */
+function getAlwaysDefinedSymbols(): Set<string> {
+    const config = vscode.workspace.getConfiguration("asn1");
+    const list = config.get<string[]>("alwaysDefined", []);
+    return new Set(list);
+}
+
+/**
+ * @summary Whether an otherwise-undefined symbol should not produce a diagnostic
+ * @description
+ *
+ * Consults the global named-bit index if the identifier appears in curly
+ * brackets, the named-integer / enumerated-variant index otherwise, then the
+ * `asn1.alwaysDefined` configuration.
+ *
+ * @param document The current text document
+ * @param loc The location of the identifier (or `Defined*` production)
+ * @param identifier The identifier that was not locally assigned or imported
+ * @param alwaysDefined Identifiers configured to always be treated as defined
+ * @returns `true` if no "symbol not defined" diagnostic should be emitted
+ * @author Cursor Grok 4.6
+ * @function
+ */
+function shouldSuppressUndefinedSymbolDiagnostic(
+    document: vscode.TextDocument,
+    loc: Asn1ParserLocation,
+    identifier: string,
+    alwaysDefined: ReadonlySet<string>,
+): boolean {
+    if (identifierAppearsInCurlyBrackets(document, loc)) {
+        if (isKnownNamedBit(identifier)) {
+            return true;
+        }
+    } else if (isKnownNamedIntegerOrEnum(identifier)) {
+        return true;
+    }
+    return alwaysDefined.has(identifier);
+}
+
+/**
+ * @summary Record identifier names from an `IdentifierList` as used symbols
+ * @param document The current text document
+ * @param node The `IdentifierList` CST node, or a descendant
+ * @param usedSymbols The set of used symbols to insert identifiers into
+ * @function
+ */
+function collectIdentifiersFromIdentifierList(
+    document: vscode.TextDocument,
+    node: Production,
+    usedSymbols: Set<string>,
+): void {
+    if (node.type === "identifier") {
+        usedSymbols.add(document.getText(getRangeFromLocation(document, node.location)));
+        return;
+    }
+    for (const child of node.children) {
+        collectIdentifiersFromIdentifierList(document, child, usedSymbols);
+    }
+}
+
+/**
+ * @summary Drill into the Concrete Syntax Tree (CST) to find undefined symbols
+ * @description
+ * 
+ * NOTE: You do not have to check that the import includes the "{}" if it is
+ * parameterized. That is optional, per ITU-T Recommendation X.683 (2021), Section 9.1.
+ * 
+ * A non-parameterized import is NOT allowed to use the "{}", but we are not going to
+ * check this scenario, because it would be rare and computationally expensive.
+ * 
+ * @param document The current text document
+ * @param mod The current ASN.1 module
+ * @param diags The output diagnostics as an array
+ * @param cstnode The current Concrete Syntax Tree (CST) node into which to recurse
+ * @param usedSymbols The set of used symbols to insert encountered symbols into
+ * @param enumItemsDefined Any `ENUMERATED` variants defined
+ * @param assignment The current assignment
+ * @param recursionTTL The recursion TTL: recursion limit, after which this function
+ *  immediately returns without doing anything.
+ * @param insideSetting `true` if `cstnode` falls within a `Setting` production
+ * @param alwaysDefined Identifiers configured to always be treated as defined
+ * @function
+ */
+function drillForUndefinedSymbols(
+    document: vscode.TextDocument,
+    mod: Module,
+    diags: vscode.Diagnostic[],
+    cstnode: Production,
+    usedSymbols: Set<string>,
+    enumItemsDefined: Set<string>,
+    assignment: Assignment | undefined,
+    recursionTTL: number = 100,
+    insideSetting: boolean = false,
+    alwaysDefined: ReadonlySet<string> = new Set(),
+): void {
+    if (recursionTTL <= 0) {
+        return;
+    }
+    recursionTTL--;
+    for (const child of cstnode.children) {
+        const childInsideSetting = insideSetting || (child.type === "Setting");
+        /*
+        The parser prefers to read `{ ident, ident, ... }` as a BitStringValue
+        IdentifierList rather than an ObjectSet. When that production is a
+        Setting in an ObjectDefn (e.g. SUBCLASS OF {top}), those identifiers
+        are object references and must be counted as used.
+        */
+        if (childInsideSetting && (child.type === "IdentifierList")) {
+            collectIdentifiersFromIdentifierList(document, child, usedSymbols);
+            continue;
+        }
+        if (selfContainedProductions.has(child.type)) {
+            continue;
+        }
+        if (isDefinedThing(child)) {
+            const text = document.getText();
+            const ctx = createGrokContext(text);
+            let def: Defined;
+            try {
+                def = grokerFor.Defined(child, ctx);
+            } catch {
+                continue;
+            }
+            if (def.module) {
+                // Explicit module reference.
+                // We cannot say that it wasn't imported or defined.
+                continue;
+            }
+            if (builtinRootArcNamesToNumber.has(def.reference)) {
+                continue;
+            }
+            usedSymbols.add(def.reference);
+
+            // If there are any parameters, check if they are parameterized.
+            const params = child
+                .children
+                .find((c) => c.type.startsWith("Parameterized"))
+                ?.children
+                .find((c) => c.type === "ActualParameterList")
+                // Yes, ActualParameterList is within itself in my parser
+                // implementation. Sorry for being a bad programmer.
+                ?.children
+                .find((c) => c.type === "ActualParameterList")
+                ?.children
+                .filter((c) => c.type === "ActualParameter");
+            for (const param of params ?? []) {
+                drillForUndefinedSymbols(
+                    document,
+                    mod,
+                    diags,
+                    param,
+                    usedSymbols,
+                    enumItemsDefined,
+                    assignment,
+                    recursionTTL,
+                    childInsideSetting,
+                    alwaysDefined,
+                );
+            }
+            const isDefinedEnumVariant: boolean = (
+                !!assignment
+                && enumItemsDefined.has(def.reference)
+            );
+            const isDefinedInParams: boolean = (assignment?.parameters ?? [])
+                .some((p) => p.dummyReference === def.reference);
+            if (
+                isDefinedOrImported(mod, def.reference)
+                || isDefinedInParams
+                || isDefinedEnumVariant
+                || shouldSuppressUndefinedSymbolDiagnostic(
+                    document,
+                    child.location,
+                    def.reference,
+                    alwaysDefined,
+                )
+            ) {
+                continue;
+            }
+            const range = getRangeFromLocation(document, child.location);
+            const diag = new vscode.Diagnostic(
+                range,
+                SYMBOL_NOT_DEFINED,
+                vscode.DiagnosticSeverity.Error,
+            );
+            diag.code = DIAG_CODE_SYMBOL_NOT_DEFINED;
+            diags.push(diag);
+        } else {
+            drillForUndefinedSymbols(
+                document,
+                mod,
+                diags,
+                child,
+                usedSymbols,
+                enumItemsDefined,
+                assignment,
+                recursionTTL,
+                childInsideSetting,
+                alwaysDefined,
+            );
+        }
+    }
+}
+
+/**
+ * @summary Provide missing symbol-related diagnostics
+ * @param document The current text document
+ * @param mod The current ASN.1 module
+ * @param diags The output diagnostics as an array
+ * @param usedSymbols A set into which encountered used symbols are inserted as strings
+ * @param enumItemsDefined A set of `ENUMERATED` values defined
+ * @function
+ */
+function provideMissingSymbolDiagnostics(
+    document: vscode.TextDocument,
+    mod: Module,
+    diags: vscode.Diagnostic[],
+    usedSymbols: Set<string>,
+    enumItemsDefined: Set<string>,
+): void {
+    if (!mod.production) {
+        return;
+    }
+    const body = mod.production.children
+        .find((c) => c.type === "ModuleBody");
+    if (!body) {
+        return;
+    }
+    const alwaysDefined = getAlwaysDefinedSymbols();
+
+    // Check that all exported symbols are defined
+    const exps = Object.entries(mod.exports?.exportedSymbols ?? {});
+    for (const [exp, prod] of exps) {
+        // Yes, you can re-export imports.
+        if (isDefinedOrImported(mod, exp)) {
+            continue;
+        }
+        const range = getRangeFromLocation(document, prod.location);
+        const diag = new vscode.Diagnostic(
+            range,
+            SYMBOL_NOT_DEFINED,
+            vscode.DiagnosticSeverity.Error,
+        );
+        diag.code = DIAG_CODE_EXPORT_NOT_DEFINED;
+        diags.push(diag);
+    }
+
+    // Check that all `DefinedValue`s in imported module OIDs are defined
+    for (const sfm of Object.values(mod.imports.modules)) {
+        if (!sfm.assignedIdentifier || !sfm.production) {
+            continue;
+        }
+        const assid = sfm.production
+            .children
+            .find((c) => (c.type === "GlobalModuleReference"))
+            ?.children
+            .find((c) => c.type === "AssignedIdentifier");
+        if (!assid) {
+            continue;
+        }
+        drillForUndefinedSymbols(
+            document,
+            mod,
+            diags,
+            assid,
+            usedSymbols,
+            new Set(),
+            undefined,
+            10,
+            false,
+            alwaysDefined,
+        );
+    }
+
+    // Check that all `Defined*` used in assignments are defined
+    for (const assn of Object.values(mod.assignments)) {
+        if (!assn.production) {
+            continue; // This should not happen.
+        }
+        drillForUndefinedSymbols(document, mod, diags, assn.production, usedSymbols, enumItemsDefined, assn, 100, false, alwaysDefined);
+        const params = (assn.parameters ?? []);
+        for (const param of params) {
+            if (!usedSymbols.has(param.dummyReference)) {
+                const ploc = param.production?.location ?? assn.production.location;
+                const range = getRangeFromLocation(document, ploc);
+                const diag = new vscode.Diagnostic(
+                    range,
+                    "parameter not used in this asn.1 assignment",
+                    vscode.DiagnosticSeverity.Warning,
+                );
+                diag.code = DIAG_CODE_PARAM_SYMBOL_UNUSED;
+                diag.tags = [
+                    vscode.DiagnosticTag.Unnecessary,
+                ];
+                diags.push(diag);
+            } else {
+                // So this does not pollute subsequent assignments.
+                usedSymbols.delete(param.dummyReference);
+            }
+        }
+    }
+}
+
+/**
+ * @summary Determine whether a line of text has the effect of disabling diagnostics for the file
+ * @param line A line of text from the document
+ * @returns `true` if this line disables diagnostics for the document
+ */
+function lineDisablesDiagnostics(line: string): boolean {
+    return (
+        /^\s*--\s*no_diagnose/.test(line)
+        || /^\s*\/\*\s*no_diagnose/.test(line)
+    );
+}
+
+/**
+ * @summry Convert an `ASN1SyntaxError` to a VS Code `Diagnostic`
+ * @param document The current text document
+ * @param e The error to convert to a diagnostic
+ * @param malformedThing The string describing the thing that is malformed
+ * @param code The diagnostic code (as a string)
+ * @returns A VS Code diagnostic
+ * @function
+ */
+function syntaxErrorToDiag(
+    document: vscode.TextDocument,
+    e: ASN1SyntaxError,
+    malformedThing: string,
+    code: string,
+): vscode.Diagnostic {
+    const range = getRangeFromLocation(document, e.production.location);
+    const diag = new vscode.Diagnostic(
+        range,
+        e.moduleName
+            ? `malformed ${malformedThing}: syntax error in ${e.moduleName}: ${e.message}`
+            : `malformed ${malformedThing}: syntax error: ${e.message}`,
+        vscode.DiagnosticSeverity.Error,
+    );
+    diag.code = code;
+    return diag;
+}
+
+/**
+ * @summry Convert an ASN.1-related non-syntax error to a VS Code `Diagnostic`
+ * @param document The current text document
+ * @param e The error to convert to a diagnostic
+ * @param malformedThing The string describing the thing that is malformed
+ * @param code The diagnostic code (as a string)
+ * @returns A VS Code diagnostic
+ * @function
+ */
+function asn1NonSyntaxErrorToDiag(
+    document: vscode.TextDocument,
+    e: ASN1SemanticError | ASN1ParserExpectationError,
+    malformedThing: string,
+    code: string,
+    errstring: string,
+): vscode.Diagnostic {
+    let [start, end] = getRangeForWholeDocument(document);
+    const range = e.production
+        ? getRangeFromLocation(document, e.production.location)
+        : new vscode.Range(start, end);
+    let locdesc: string = "";
+    if (e.assignment) {
+        locdesc += ` in assignment ${e.assignment}`;
+    }
+    if (e.moduleName) {
+        locdesc += ` in module ${e.moduleName}`;
+    }
+    const diag = new vscode.Diagnostic(
+        range,
+        `malformed ${malformedThing}: ${errstring}${locdesc}: ${e.message}`,
+        vscode.DiagnosticSeverity.Error,
+    );
+    diag.code = code;
+    return diag;
+}
+
+/**
+ * @summry Convert an `ASN1SemanticError` to a VS Code `Diagnostic`
+ * @param document The current text document
+ * @param e The error to convert to a diagnostic
+ * @param malformedThing The string describing the thing that is malformed
+ * @param code The diagnostic code (as a string)
+ * @returns A VS Code diagnostic
+ * @function
+ */
+function semanticErrorToDiag(
+    document: vscode.TextDocument,
+    e: ASN1SemanticError,
+    malformedThing: string,
+    code: string,
+): vscode.Diagnostic {
+    return asn1NonSyntaxErrorToDiag(document, e, malformedThing, code, "semantic error");
+}
+
+/**
+ * @summry Convert an `ASN1ParserExpectationError` to a VS Code `Diagnostic`
+ * @param document The current text document
+ * @param e The error to convert to a diagnostic
+ * @param malformedThing The string describing the thing that is malformed
+ * @param code The diagnostic code (as a string)
+ * @returns A VS Code diagnostic
+ * @function
+ */
+function expectationErrorToDiag(
+    document: vscode.TextDocument,
+    e: ASN1ParserExpectationError,
+    malformedThing: string,
+    code: string,
+): vscode.Diagnostic {
+    return asn1NonSyntaxErrorToDiag(document, e, malformedThing, code, "assertion failure");
+}
+
+/**
+ * @summary Update diagnostics for a given text document
+ * @param document The current text document
+ * @param diagnosticCollection The diagnostics collection
+ * @returns A promise that resolves to nothing
+ * @async
+ * @function
+ */
+export
+async function updateDiagnostics(
+    document: vscode.TextDocument,
+    diagnosticCollection: vscode.DiagnosticCollection,
+): Promise<void> {
+    const config = vscode.workspace.getConfiguration("asn1");
+    const enableDiagnostics = config.get<boolean>("enableDiagnostics");
+    if (!enableDiagnostics) {
+        diagnosticCollection.clear();
+        return;
+    }
+    const firstline = document.lineAt(0);
+    const firstlineText = firstline.text;
+    if (lineDisablesDiagnostics(firstlineText)) {
+        const diag = new vscode.Diagnostic(
+            firstline.range,
+            "diagnostics disabled. remove the 'no_diagnose' to re-enable diagnostics.",
+            vscode.DiagnosticSeverity.Warning,
+        );
+        diag.code = DIAG_CODE_DIAG_DISABLED;
+        diagnosticCollection.set(document.uri, [diag]);
+        return;
+    }
+    log.appendLine(`updating diagnostics for file ${document.uri}`);
+    const p = await getParserOutputs(document);
+    if (!p.lexicalTokens) {
+        return; // Should not happen.
+    }
+    let [start, end] = getRangeForWholeDocument(document);
+    let modname: string | undefined;
+    let thing: string = "asn.1 lexical token stream";
+    let code: string = DIAG_CODE_LEX_ERROR;
+    if ("err" in p.lexicalTokens) {
+        const e = p.lexicalTokens.err;
+        const indexInMessage = e.message.indexOf(AT_INDEX);
+        if (e instanceof ASN1SyntaxError) {
+            const diag = syntaxErrorToDiag(document, e, thing, code);
+            diagnosticCollection.set(document.uri, [diag]);
+            return;
+        } else if (e instanceof ASN1SemanticError) {
+            const diag = semanticErrorToDiag(document, e, thing, code);
+            diagnosticCollection.set(document.uri, [diag]);
+            return;
+        } else if (e instanceof ASN1ParserExpectationError) {
+            const diag = expectationErrorToDiag(document, e, thing, code);
+            diagnosticCollection.set(document.uri, [diag]);
+            return;
+        } else if (indexInMessage > -1) {
+            /* I checked: this will return after encountering non-digits, so
+            I do not have to trim the string to only digits. */
+            const index = Number.parseInt(
+                e.message.slice(indexInMessage + AT_INDEX.length),
+                10,
+            );
+            if (Number.isSafeInteger(index)) {
+                start = document.positionAt(index);
+            }
+        }
+        const range = new vscode.Range(start, end);
+        const diag = new vscode.Diagnostic(
+            range,
+            modname
+                ? (`malformed asn.1 lexical token stream in ${modname}: ` + e.message)
+                : ("malformed asn.1 lexical token stream: " + e.message),
+            vscode.DiagnosticSeverity.Error,
+        );
+        diag.code = DIAG_CODE_LEX_ERROR;
+        diagnosticCollection.set(document.uri, [diag]);
+        return;
+    }
+    if (!p.parserEndState) {
+        return; // Should not happen.
+    }
+    thing = "asn.1 syntax";
+    code = DIAG_CODE_PARSE_ERROR;
+    if ("err" in p.parserEndState) {
+        const e = p.parserEndState.err;
+        if (e instanceof ASN1SyntaxError) {
+            const diag = syntaxErrorToDiag(document, e, thing, code);
+            diagnosticCollection.set(document.uri, [diag]);
+            return;
+        } else if (e instanceof ASN1SemanticError) {
+            const diag = semanticErrorToDiag(document, e, thing, code);
+            diagnosticCollection.set(document.uri, [diag]);
+            return;
+        } else if (e instanceof ASN1ParserExpectationError) {
+            const diag = expectationErrorToDiag(document, e, thing, code);
+            diagnosticCollection.set(document.uri, [diag]);
+            return;
+        }
+        const range = new vscode.Range(start, end);
+        const diag = new vscode.Diagnostic(
+            range,
+            "malformed asn.1 syntax: " + e.message,
+            vscode.DiagnosticSeverity.Error,
+        );
+        diag.code = DIAG_CODE_PARSE_ERROR;
+        diagnosticCollection.set(document.uri, [diag]);
+        return;
+    }
+    const parsing = p.parserEndState.ok;
+    if (parsing.error) {
+        const range = new vscode.Range(start, end);
+        const diag = new vscode.Diagnostic(
+            range,
+            "malformed asn.1 syntax: unknown error",
+            vscode.DiagnosticSeverity.Error,
+        );
+        diag.code = DIAG_CODE_PARSE_ERROR;
+        diagnosticCollection.set(document.uri, [diag]);
+        return;
+    }
+    if (Object.keys(parsing.syntaxErrors).length > 0) {
+        const diags: vscode.Diagnostic[] = [];
+        for (const e of Object.values(parsing.syntaxErrors)) {
+            const diag = syntaxErrorToDiag(document, e, thing, code);
+            diags.push(diag);
+        }
+        diagnosticCollection.set(document.uri, diags);
+        return;
+    }
+    if (!p.parsedModules) {
+        return; // Should not happen
+    }
+    thing = "asn.1 module";
+    code = DIAG_CODE_GROK_ERROR;
+    if ("err" in p.parsedModules) {
+        const e = p.parsedModules.err;
+        if (e instanceof ASN1SyntaxError) {
+            const diag = syntaxErrorToDiag(document, e, thing, code);
+            diagnosticCollection.set(document.uri, [diag]);
+            return;
+        } else if (e instanceof ASN1SemanticError) {
+            const diag = semanticErrorToDiag(document, e, thing, code);
+            diagnosticCollection.set(document.uri, [diag]);
+            return;
+        } else if (e instanceof ASN1ParserExpectationError) {
+            const diag = expectationErrorToDiag(document, e, thing, code);
+            diagnosticCollection.set(document.uri, [diag]);
+            return;
+        }
+        const range = new vscode.Range(start, end);
+        const diag = new vscode.Diagnostic(
+            range,
+            "malformed asn.1 module: " + e.message,
+            vscode.DiagnosticSeverity.Error,
+        );
+        diag.code = DIAG_CODE_GROK_ERROR;
+        diagnosticCollection.set(document.uri, [diag]);
+        return;
+    }
+    const enumItems = p.parserEndState.ok.definedEnumItems;
+    const modules = p.parsedModules.ok;
+    const diags: vscode.Diagnostic[] = [];
+    for (const module of modules) {
+        const usedSymbols: Set<string> = new Set();
+        // The specification technically does not forbid duplicate imports, but it does explicitly forbid duplicate assignments.
+        provideDuplicateAssignmentDiagnostics(document, module, diags);
+        provideAssignmentListDiagnostics(document, module, diags);
+
+        // Ordering is important here: provideMissingSymbolDiagnostics populates
+        // usedSymbols, which is used by provideImportDiagnostics.
+        provideMissingSymbolDiagnostics(document, module, diags, usedSymbols, enumItems);
+        provideImportDiagnostics(document, module, diags, usedSymbols);
+    }
+    diagnosticCollection.set(document.uri, diags);
+}

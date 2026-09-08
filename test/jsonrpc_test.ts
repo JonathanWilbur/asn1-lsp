@@ -1,9 +1,9 @@
 import { assertEquals } from "jsr:@std/assert@1";
 import { Asn1LanguageServer } from "../src/lsp/server.ts";
 import {
+    createMessageWriter,
     encodeMessage,
     readMessages,
-    writeAllSync,
     writeMessage,
 } from "../src/lsp/jsonrpc.ts";
 import { resetAll } from "./helpers.ts";
@@ -69,19 +69,32 @@ Deno.test("JSON-RPC Content-Length framing round-trips", async () => {
     assertEquals((messages[0] as { id: number }).id, 1);
 });
 
-Deno.test("writeAllSync writes the full framed message", () => {
-    const payload = { jsonrpc: "2.0", method: "exit" };
-    const framed = encodeMessage(payload);
+Deno.test("queued writer sends whole frames in call order", async () => {
     const chunks: Uint8Array[] = [];
-    const dest = {
-        writeSync(p: Uint8Array): number {
-            const n = Math.min(7, p.byteLength);
-            chunks.push(p.slice(0, n));
-            return n;
+    const firstWriteStarted = Promise.withResolvers<void>();
+    const firstWriteContinue = Promise.withResolvers<void>();
+    const writable = new WritableStream<Uint8Array>({
+        async write(chunk) {
+            if (chunks.length === 0) {
+                firstWriteStarted.resolve();
+                await firstWriteContinue.promise;
+            }
+            chunks.push(chunk.slice());
         },
-    };
-    writeAllSync(dest, framed);
-    assertFramed(concat(chunks), payload);
+    });
+    const writer = writable.getWriter();
+    const out = createMessageWriter(writer);
+    const first = { jsonrpc: "2.0", method: "window/logMessage", params: { n: 1 } };
+    const second = { jsonrpc: "2.0", id: 1, result: null };
+    const p1 = out.write(first);
+    const p2 = out.write(second);
+    await firstWriteStarted.promise;
+    firstWriteContinue.resolve();
+    await Promise.all([p1, p2]);
+    await writer.close();
+    assertEquals(chunks.length, 2);
+    assertFramed(chunks[0], first);
+    assertFramed(chunks[1], second);
 });
 
 Deno.test("stdio CLI frames initialize on stdout", async () => {

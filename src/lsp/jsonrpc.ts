@@ -60,6 +60,10 @@ export function encodeMessage(message: unknown): Uint8Array {
 
 /**
  * Write a fully framed JSON-RPC message as a single chunk.
+ *
+ * `WritableStreamDefaultWriter.write` delivers the whole chunk (unlike
+ * `Deno.stdout.write`, which may be partial). One chunk per message keeps the
+ * `Content-Length` header attached to its JSON body.
  */
 export async function writeMessage(
     writer: WritableStreamDefaultWriter<Uint8Array>,
@@ -69,28 +73,27 @@ export async function writeMessage(
 }
 
 /**
- * Write every byte of `data`, looping on partial `writeSync` results.
+ * Queue framed writes on one stream writer so messages stay in call order
+ * without blocking the event loop or splitting a frame across two writes.
  */
-export function writeAllSync(
-    dest: { writeSync(p: Uint8Array): number },
-    data: Uint8Array,
-): void {
-    let offset = 0;
-    while (offset < data.byteLength) {
-        const n = dest.writeSync(data.subarray(offset));
-        if (n <= 0) {
-            throw new Error("failed to write JSON-RPC framed message");
-        }
-        offset += n;
-    }
-}
-
-/**
- * Write a framed JSON-RPC message to stdout. Synchronous so a notification
- * cannot interleave with another message's header or body.
- */
-export function writeMessageToStdout(message: unknown): void {
-    writeAllSync(Deno.stdout, encodeMessage(message));
+export function createMessageWriter(
+    writer: WritableStreamDefaultWriter<Uint8Array>,
+): {
+    write: (message: unknown) => Promise<void>;
+    idle: () => Promise<void>;
+} {
+    let writes = Promise.resolve();
+    return {
+        write(message: unknown) {
+            const bytes = encodeMessage(message);
+            const next = writes.then(() => writer.write(bytes));
+            writes = next.catch(() => {});
+            return next;
+        },
+        idle() {
+            return writes;
+        },
+    };
 }
 
 /**

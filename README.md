@@ -1,5 +1,7 @@
 # ASN.1 Language Server Protocol (LSP) Server
 
+[![JSR](https://jsr.io/badges/@wildboar/asn1-lsp)](https://jsr.io/@wildboar/asn1-lsp)
+
 A [Language Server Protocol](https://microsoft.github.io/language-server-protocol/)
 implementation for ASN.1, written in TypeScript and intended to run on
 [Deno](https://deno.com/). Parsing uses

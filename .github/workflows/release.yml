@@ -42,5 +42,7 @@ jobs:
             asn1-lsp-darwin-aarch64 \
             asn1-lsp-windows-x86_64.exe \
             --clobber
+      - name: Remove dirty files
+        run: rm asn1-lsp-*
       - name: Publish to JSR
         run: deno publish

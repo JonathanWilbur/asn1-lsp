@@ -42,13 +42,14 @@ import log from "./logging.ts";
 import { DATE_REGEX, TIME_REGEX } from "./time.ts";
 import { ASN1Construction, ASN1TagClass, ASN1UniversalType, BERElement } from "@wildboar/asn1";
 import type { ASN1ModuleName } from "./types.ts";
+import type { DiagnosticCollection } from "./types_vscode.ts";
 
 const LANGUAGE: string = "asn1";
 
 /**
  * The diagnostic collection for ASN.1.
  */
-export const diagnosticCollection = vscode.languages.createDiagnosticCollection(LANGUAGE);
+export const diagnosticCollection: DiagnosticCollection = vscode.languages.createDiagnosticCollection(LANGUAGE);
 
 export const DIAG_CODE_IMPORT_SYMBOL_DUP: string = "E0001";
 export const DIAG_CODE_IMPORT_SYMBOL_UNUSED: string = "E0002";

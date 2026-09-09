@@ -162,7 +162,19 @@ const configurationAccessor: ConfigurationAccessor = {
     },
 };
 
-export const workspace = {
+export type Workspace = {
+    readonly textDocuments: TextDocument[];
+    readonly workspaceFolders: { uri: Uri; name: string }[] | undefined;
+    getConfiguration(
+        section?: string,
+        resource?: unknown
+    ): ConfigurationAccessor;
+    openTextDocument(uri: Uri): Promise<TextDocument>;
+    findFiles(include: string, exclude?: string): Promise<Uri[]>;
+    asRelativePath(uriOrPath: Uri | string): string;
+};
+
+export const workspace: Workspace = {
     get textDocuments(): TextDocument[] {
         return getOpenTextDocuments();
     },
@@ -218,8 +230,12 @@ export const window = {
     },
 };
 
-export const languages = {
+export const languages: Languages = {
     createDiagnosticCollection(name: string): DiagnosticCollection {
         return new DiagnosticCollection(name);
-    },
+    }
+};
+
+export type Languages = {
+    createDiagnosticCollection(name: string): DiagnosticCollection;
 };

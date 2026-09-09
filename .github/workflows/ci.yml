@@ -17,5 +17,5 @@ jobs:
           deno-version: v2.x
       - name: Type check
         run: deno task check
-      # - name: Run unit tests
-      #   run: deno task test
+      - name: Run unit tests
+        run: deno task test

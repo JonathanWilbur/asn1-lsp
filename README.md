@@ -46,11 +46,12 @@ Compiled binaries are attached to GitHub Releases (`asn1-lsp-linux-x86_64`,
 - Completions and signature help for parameterized assignments
 - Conservative document formatting
 - Selection ranges
-- Diagnostics (duplicate / unused / undefined symbols, malformed OIDs, times, strings, `COMPONENTS OF`, …)
+- Diagnostics (duplicate / unused / undefined symbols, malformed OIDs, times,
+  strings, `COMPONENTS OF`, …)
 - Code actions: remove unused or duplicate imports
 
 Syntax highlighting, snippets, and language configuration remain editor-client
-concerns. CSV/JSON export from the VS Code extension is not included.
+concerns.
 
 ## Configuration
 
@@ -69,13 +70,6 @@ Pass these as `initializationOptions` and/or `asn1.*` settings via
 A first line containing `no_diagnose` (for example `-- no_diagnose`) disables
 diagnostics for that file except a reminder warning.
 
-## Non-features
-
-The server does not fully validate ASN.1 at a semantic level: it does not check
-that values match types, verify defined syntax of information objects, validate
-Encoding Control Notation, or confirm that imported symbols exist in the
-exporting module.
-
 ## Development
 
 ```sh
@@ -83,9 +77,6 @@ deno task check
 deno task test
 deno task compile
 ```
-
-`vscode-asn1/` in a local checkout is a gitignored reference copy of the VS Code
-extension and is not part of the published package.
 
 ## Publishing
 

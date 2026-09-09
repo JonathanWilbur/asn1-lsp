@@ -4,16 +4,15 @@ on:
   release:
     types: [published]
 
-permissions:
-  contents: write
-  id-token: write
-
 jobs:
   publish:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       - name: Set up Deno
         uses: denoland/setup-deno@v2
         with:

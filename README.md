@@ -1,4 +1,4 @@
-# `@wildboar/asn1-lsp`
+# ASN.1 Language Server Protocol (LSP) Server
 
 A [Language Server Protocol](https://microsoft.github.io/language-server-protocol/)
 implementation for ASN.1, written in TypeScript and intended to run on

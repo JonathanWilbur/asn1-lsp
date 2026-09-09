@@ -206,7 +206,9 @@ export class Asn1LanguageServer {
                 return this.#initialize(params as InitializeParams);
             case "initialized":
                 this.initialized = true;
-                await indexAsn1Files();
+                // Index in the background so didOpen/diagnostics are not blocked
+                // behind a full workspace walk (thousands of files).
+                void this.#indexWorkspaceInBackground();
                 return;
             case "shutdown":
                 this.shutdownRequested = true;
@@ -438,6 +440,19 @@ export class Asn1LanguageServer {
         if (params.settings?.asn1) {
             setAsn1Config(params.settings.asn1);
             await this.#refreshOpenDiagnostics();
+        }
+    }
+
+    async #indexWorkspaceInBackground(): Promise<void> {
+        try {
+            await indexAsn1Files();
+            if (this.shutdownRequested || this.exitRequested) {
+                return;
+            }
+            // Named bits / integers from other files can change diagnostics.
+            await this.#refreshOpenDiagnostics();
+        } catch (e) {
+            log.appendLine(`workspace indexing failed: ${e}`);
         }
     }
 

@@ -19,7 +19,7 @@
   },
   "publish": {
     "include": [
-      "LICENSE",
+      "LICENSE.txt",
       "README.md",
       "mod.ts",
       "cli.ts",

@@ -91,7 +91,3 @@ prefer tags without one.
 
 Before the first publish, link this GitHub repository to the JSR package on
 [jsr.io](https://jsr.io) so OIDC (`id-token`) publishing succeeds.
-
-## License
-
-MIT. Copyright (c) 2026 Jonathan M. Wilbur.

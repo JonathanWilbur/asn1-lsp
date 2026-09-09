@@ -7,7 +7,17 @@ implementation for ASN.1, written in TypeScript and intended to run on
 
 This package ports the language intelligence from the
 [wildboar.asn1](https://marketplace.visualstudio.com/items?itemName=wildboar.asn1)
-VS Code extension into a stdio LSP server that any editor can host.
+VS Code extension into a stdio LSP server that any editor can host. The
+GitHub repository is [here](https://github.com/JonathanWilbur/vscode-asn1).
+
+This was mostly done by AI. I wrote almost all of the VS Code extension without
+AI. I basically just dropped the code for it into this repo and told the agent
+to implement the VS Code extensions API, but make it speak LSP. That is to say
+that this isn't fully AI slop: a real person lovingly created most of this code,
+and AI just adapted it.
+
+It seems to work, but it was not a one-shot. There were show-stopping bugs I had
+to fix at the outset. I manually tested all of the major features in Neovim.
 
 ## Install
 
@@ -37,7 +47,7 @@ Compiled binaries are attached to GitHub Releases (`asn1-lsp-linux-x86_64`,
 - Conservative document formatting
 - Selection ranges
 - Diagnostics (duplicate / unused / undefined symbols, malformed OIDs, times, strings, `COMPONENTS OF`, …)
-- Code actions: remove unused or duplicate imports, treat an identifier as defined
+- Code actions: remove unused or duplicate imports
 
 Syntax highlighting, snippets, and language configuration remain editor-client
 concerns. CSV/JSON export from the VS Code extension is not included.

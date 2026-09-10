@@ -651,7 +651,12 @@ function markup(md: MarkdownString | string): object {
 function toLspHover(hover: Hover | null | undefined): unknown {
     if (!hover) return null;
     return {
-        contents: hover.contents.map(markup),
+        contents: {
+            kind: "markdown",
+            value: hover.contents
+                .map((md) => typeof md === "string" ? md : md.value)
+                .join("\n\n---\n\n"),
+        },
         range: hover.range ? toLspRange(hover.range) : undefined,
     };
 }

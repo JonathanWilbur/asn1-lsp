@@ -13,9 +13,9 @@
     "@wildboar/asn1-parser": "jsr:@wildboar/asn1-parser@^2.7.1"
   },
   "tasks": {
-    "check": "deno check mod.ts cli.ts",
-    "test": "deno test -A --quiet",
-    "compile": "deno compile -A --output asn1-lsp cli.ts"
+    "check": "deno check --minimum-dependency-age=0 mod.ts cli.ts",
+    "test": "deno test -A --minimum-dependency-age=0 --quiet",
+    "compile": "deno compile -A --minimum-dependency-age=0 --output asn1-lsp cli.ts"
   },
   "publish": {
     "include": [

@@ -1,8 +1,7 @@
 name: Release
 
 on:
-  release:
-    types: [published]
+  workflow_dispatch:
 
 jobs:
   publish:
@@ -13,10 +12,14 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+      - name: Set SOURCE_DATE_EPOCH
+        run: echo "SOURCE_DATE_EPOCH=$(git show -s --format=%ct "$GITHUB_SHA")" >> "$GITHUB_ENV"
       - name: Set up Deno
         uses: denoland/setup-deno@v2
         with:
           deno-version: v2.x
+      - name: Get Version
+        run: echo "VERSION=$(node -p "require('./deno.json').version")" >> "$GITHUB_ENV"
       - name: Type check
         run: deno task check
       - name: Run unit tests
@@ -31,18 +34,33 @@ jobs:
         run: deno compile -A --target aarch64-apple-darwin --output asn1-lsp-darwin-aarch64 cli.ts
       - name: Compile Windows x86_64
         run: deno compile -A --target x86_64-pc-windows-msvc --output asn1-lsp-windows-x86_64.exe cli.ts
+      - name: Remove dirty files
+        run: rm asn1-lsp-*
+      - name: Publish to JSR
+        run: deno publish
+      - name: Create Git Tag
+        run: |
+          git tag "v${VERSION}"
+          git push origin "v${VERSION}"
+      - name: Extract release notes
+        id: extract-release-notes
+        uses: ffurrer2/extract-release-notes@273da39a24fb7db106a35526c8162815faffd31d # v3.1.0
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NOTES: ${{ steps.extract-release-notes.outputs.release_notes }}
+        run: |
+          gh release create "v${VERSION}" \
+            --title "v${VERSION}" \
+            --notes "${NOTES}"
       - name: Upload release assets
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release upload "${{ github.event.release.tag_name }}" \
+          gh release upload "v${VERSION}" \
             asn1-lsp-linux-x86_64 \
             asn1-lsp-linux-aarch64 \
             asn1-lsp-darwin-x86_64 \
             asn1-lsp-darwin-aarch64 \
             asn1-lsp-windows-x86_64.exe \
             --clobber
-      - name: Remove dirty files
-        run: rm asn1-lsp-*
-      - name: Publish to JSR
-        run: deno publish

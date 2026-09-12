@@ -9,7 +9,7 @@
     "jsr:@std/path@^1.1.5": "1.1.6",
     "jsr:@wildboar/asn1-parser@^2.7.1": "2.7.1",
     "jsr:@wildboar/asn1@^11.3.0": "11.3.0",
-    "npm:@jsr/wildboar__asn1-parser@^2.7.1": "2.7.1",
+    "npm:@jsr/wildboar__asn1-parser@^2.7.2": "2.7.2",
     "npm:@jsr/wildboar__asn1@^11.3.0": "11.3.0",
     "npm:dependency-graph@1": "1.0.0"
   },
@@ -50,12 +50,12 @@
     }
   },
   "npm": {
-    "@jsr/wildboar__asn1-parser@2.7.1": {
-      "integrity": "sha512-Wt3kKvod1BQa+haFbi2fOF1clTTUt4cVHLOWpYKQtzBoQ69C9SuopbbFqwnIxzFkEvKDK/ZFbi+/EQ816QkyJg==",
+    "@jsr/wildboar__asn1-parser@2.7.2": {
+      "integrity": "sha512-j3eRFH9LMHYN2HcFHmtWAK7bkxoG2aCK70s+3eHpspcefga7vGMRPfzq5QU1EpVuFqdsyjGqmudkuiXdQVsTFw==",
       "dependencies": [
         "dependency-graph"
       ],
-      "tarball": "https://npm.jsr.io/~/11/@jsr/wildboar__asn1-parser/2.7.1.tgz"
+      "tarball": "https://npm.jsr.io/~/11/@jsr/wildboar__asn1-parser/2.7.2.tgz"
     },
     "@jsr/wildboar__asn1@11.3.0": {
       "integrity": "sha512-wuCr1fY0YjS2vIBuHezsg2AIxvU32/538/RrZHWZhXCi6lPxneayM20vjobCcMQpGpFEb/gJbfPhitJhYk6oKQ==",
@@ -74,7 +74,7 @@
     ],
     "packageJson": {
       "dependencies": [
-        "npm:@jsr/wildboar__asn1-parser@^2.7.1",
+        "npm:@jsr/wildboar__asn1-parser@^2.7.2",
         "npm:@jsr/wildboar__asn1@^11.3.0"
       ]
     }
